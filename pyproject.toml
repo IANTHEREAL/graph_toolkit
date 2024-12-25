@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "graph-toolkit"
+version = "0.0.1"
+description = "for general graph algorithm"
+authors = ["Ian <ArGregoryIan@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+sqlmodel = "^0.0.22"
+tidb-vector = "^0.0.14"
+python-dotenv = "^1.0.1"
+pymysql = "^1.1.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
