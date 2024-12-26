@@ -27,15 +27,6 @@ class Entity(Base):
 
     __table_args__ = (Index("idx_entity_type", "entity_type"),)
 
-    def __init__(self, embedding_dims: int = 1536, **kwargs):
-        super().__init__(**kwargs)
-        self.description_vec = Column(
-            VectorType(embedding_dims), comment="hnsw(distance=cosine)"
-        )
-        self.meta_vec = Column(
-            VectorType(embedding_dims), comment="hnsw(distance=cosine)"
-        )
-
     def __hash__(self):
         return hash(self.id)
 
