@@ -1,14 +1,17 @@
-from typing import List, Dict, Set
+import json
+from typing import List, Set, Optional
 from sqlalchemy.orm import Session
 import numpy as np
 from Levenshtein import distance as levenshtein_distance
 from rank_bm25 import BM25Okapi
 from sklearn.cluster import DBSCAN
-from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 from joblib import Parallel, delayed  # For parallel computation
 
 from models.entity import Entity
+from llm_inference.base import LLMInterface
+from json_utils import extract_json
+
 
 # ----------------------------------------------------
 # Helper Functions or Static Methods
@@ -101,6 +104,7 @@ def compute_similarity_row(
         row_sim[j] = sim
     return row_sim
 
+
 def angle_distance_matrix(similarity_matrix: np.ndarray) -> np.ndarray:
     """
     Convert a cosine similarity matrix to an angle distance matrix (scaled into [0,1]):
@@ -120,6 +124,7 @@ def angle_distance_matrix(similarity_matrix: np.ndarray) -> np.ndarray:
     dist_mat = angles / np.pi
     return dist_mat
 
+
 class EntityAggregator:
     def __init__(self, db_session: Session):
         self.db_session = db_session
@@ -133,7 +138,13 @@ class EntityAggregator:
         :param limit: The maximum number of records to retrieve.
         :return: A list of Entity objects.
         """
-        return self.db_session.query(Entity).offset(offset).limit(limit).all()
+        return (
+            self.db_session.query(Entity)
+            .order_by(Entity.id)
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
 
     def cluster_entities(
         self,
@@ -239,7 +250,7 @@ class EntityAggregator:
         for label, entity_obj in zip(labels, entities):
             if label == -1:
                 # Noise (optional: you may print them or handle differently)
-                print(f"-1 (Noise): {entity_obj}")
+                print(f"-1 (Noise): {entity_obj.name} - {entity_obj.description}")
                 continue
             clusters_dict.setdefault(label, []).append(entity_obj)
 
@@ -252,3 +263,87 @@ class EntityAggregator:
         """
         entities = self.get_entities()
         return self.cluster_entities(entities, similarity_threshold=threshold)
+
+
+def merge_entities(
+    llm_client: LLMInterface,
+    cluster_entities: List[Entity],
+) -> Optional[Entity]:
+    """
+    Call an LLM (ChatCompletion) to produce a merged entity for a given cluster of entities.
+
+    Steps:
+    1. Build a system + user prompt that explains how to merge these entities.
+    2. Call the OpenAI ChatCompletion API with the cluster data in a structured format.
+    3. Parse the LLM's response to construct and return the merged Entity object
+       (or None if model decides they do not represent the same concept).
+
+    :param cluster_entities: A list of Entity objects belonging to the same cluster.
+    :param openai_api_key: Your OpenAI API key.
+    :param model: Which chat model to use (e.g., gpt-3.5-turbo, gpt-4).
+    :return: A single merged Entity or None if the model advises not to merge.
+    """
+    if not cluster_entities:
+        return None
+
+    # Prepare the cluster data in JSON
+    cluster_data = []
+    for e in cluster_entities:
+        cluster_data.append(
+            {
+                "name": e.name,
+                "description": e.description,
+                "meta": e.meta if e.meta else {},
+            }
+        )
+
+    # Build system instruction (Prompt design)
+    prompt = f"""You are a knowledge expert assistant specialized in database technologies. You are given a cluster of entities, each containing:
+- name: A short string identifier (e.g., "TiKV")
+- description: A potentially extensive text describing the entity
+- meta: A JSON-like object containing additional data
+
+Your task is to determine how to consolidate all entities within this cluster into a single merged entity, given that they are deemed to represent the same underlying concept, object, or topic.
+Detailed Instructions:
+
+1. Merge Descriptions:
+- Combine or summarize the various descriptions into one cohesive, consolidated description.
+- Avoid simple concatenation if there is redundant or overlapping text.
+- Preserve all critical information from any of the descriptions so that the final text covers the full spectrum of details provided by the original entities.
+
+2. Merge Meta Fields:
+- Gather all relevant key-value pairs from the meta fields of the individual entities.
+- If there are conflicting keys with different values, reconcile or list them together so that no important detail is lost.
+- If there is duplicative or highly similar content, unify them.
+
+3. Preserve the Name:
+- Since these entities are in the same cluster, they presumably share a consistent name (e.g., "TiKV").
+- If minor variations exist (case changes, slight synonyms), choose the most representative or official name.
+
+4. Final Output: 
+- Return a new, consolidated entity json object containing keys:  "name" (string), "description" (merged/summarized text), "meta" (merged metadata)
+- If you conclude the entities do not actually represent the same concept, return empty json object {{}} for the merged entity (though in this scenario, we assume the cluster truly means they are duplicates).
+
+5. Content Accuracy:
+- Ensure that the merged summary strictly reflects the actual content of the cluster entities.
+- Do not incorporate any external information or rely on prior knowledge not present in the provided cluster data.
+
+Considerations:
+- Make sure the final entity retains all essential context from across the cluster.
+- Do not lose important details or source references that could be crucial for domain-specific knowledge.
+- The final output should be logically consistent and readable.
+
+Here is the cluster data as a JSON list:
+{json.dumps(cluster_data, indent=2)}
+Please produce the merged entity as JSON with keys (name, description, meta). If you determine these are not the same entity, simply return {{}}.
+"""
+
+    try:
+        # Call OpenAI ChatCompletion
+        response = llm_client.generate(prompt=prompt)
+
+        json_object = extract_json(response)
+        return json.loads(json_object)
+    except Exception as e:
+        print("[ERROR in call_llm_to_merge_entities]:", str(e))
+        raise e
