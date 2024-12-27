@@ -8,10 +8,9 @@ from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 from joblib import Parallel, delayed  # For parallel computation
 
-from models.entity import Entity
+from models.entity import get_entity_model
 from llm_inference.base import LLMInterface
 from json_utils import extract_json
-
 
 # ----------------------------------------------------
 # Helper Functions or Static Methods
@@ -126,10 +125,13 @@ def angle_distance_matrix(similarity_matrix: np.ndarray) -> np.ndarray:
 
 
 class EntityAggregator:
-    def __init__(self, db_session: Session):
+    def __init__(
+        self, db_session: Session, entity_table_name: str = "entities", dim: int = 1536
+    ):
         self.db_session = db_session
+        self._entity_model = get_entity_model(entity_table_name, dim)
 
-    def get_entities(self, offset: int = 0, limit: int = 10000) -> List[Entity]:
+    def get_entities(self, offset: int = 0, limit: int = 10000) -> List:
         """
         Retrieve a list of Entity objects from the database using the specified
         offset and limit.
@@ -139,8 +141,8 @@ class EntityAggregator:
         :return: A list of Entity objects.
         """
         return (
-            self.db_session.query(Entity)
-            .order_by(Entity.id)
+            self.db_session.query(self._entity_model)
+            .order_by(self._entity_model.id)
             .offset(offset)
             .limit(limit)
             .all()
@@ -267,8 +269,8 @@ class EntityAggregator:
 
 def merge_entities(
     llm_client: LLMInterface,
-    cluster_entities: List[Entity],
-) -> Optional[Entity]:
+    cluster_entities: List,
+):
     """
     Call an LLM (ChatCompletion) to produce a merged entity for a given cluster of entities.
 
