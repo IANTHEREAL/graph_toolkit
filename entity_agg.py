@@ -7,6 +7,7 @@ from rank_bm25 import BM25Okapi
 from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 from joblib import Parallel, delayed  # For parallel computation
+import tiktoken  # Add this import at the top
 
 from models.entity import get_entity_model
 from llm_inference.base import LLMInterface
@@ -267,23 +268,84 @@ class EntityAggregator:
         return self.cluster_entities(entities, similarity_threshold=threshold)
 
 
+def should_merge_entities(
+    llm_client: LLMInterface, cluster_entities: List, **model_kwargs
+) -> bool:
+    """
+    Determine if the given entities should be merged based on their names, descriptions, and metadata.
+
+    :param llm_client: LLM interface for making the determination
+    :param cluster_entities: List of Entity objects to evaluate
+    :return: Boolean indicating whether the entities should be merged
+    """
+    if not cluster_entities or len(cluster_entities) < 2:
+        return False
+
+    # Prepare the cluster data in JSON
+    cluster_data = []
+    for e in cluster_entities:
+        cluster_data.append(
+            {
+                "name": e.name,
+                "description": e.description,
+                "meta": e.meta if e.meta else {},
+            }
+        )
+
+    prompt = f"""You are a knowledge expert assistant. Your task is to determine if the following entities represent the same underlying concept and should be merged.
+
+Please analyze:
+1. Names: Are they the same concept with slight variations (e.g., "PostgreSQL" vs "Postgres")?
+2. Descriptions: Do they describe the same thing from different angles or with different levels of detail?
+3. Metadata: Is the metadata complementary or contradictory?
+
+Rules for determining merger:
+- Entities should clearly refer to the same concept, tool, or technology
+- Minor variations in names are acceptable if they clearly refer to the same thing
+- Descriptions should be complementary or overlapping, not contradictory
+- Metadata should not contain conflicting critical information
+
+Here are the entities to analyze:
+{json.dumps(cluster_data, indent=2)}
+
+Please respond with a JSON object containing:
+{{"should_merge": true/false, "reason": "brief explanation of your decision"}}
+"""
+
+    try:
+        response = llm_client.generate(prompt=prompt, **model_kwargs)
+        result = json.loads(extract_json(response))
+        return result.get("should_merge", False)
+    except Exception as e:
+        print("[ERROR in should_merge_entities]:", str(e))
+        return False
+
+
+def count_tokens(text: str, model: str = "gpt-4o") -> int:
+    """
+    Count the number of tokens in a text string.
+
+    :param text: The text to count tokens for
+    :param model: The model name to use for token counting (default: gpt-4o)
+    :return: Number of tokens
+    """
+    encoding = tiktoken.encoding_for_model(model)
+    return len(encoding.encode(text))
+
+
 def merge_entities(
     llm_client: LLMInterface,
     cluster_entities: List,
+    only_count_token: bool = False,
+    **model_kwargs,
 ):
     """
     Call an LLM (ChatCompletion) to produce a merged entity for a given cluster of entities.
 
-    Steps:
-    1. Build a system + user prompt that explains how to merge these entities.
-    2. Call the OpenAI ChatCompletion API with the cluster data in a structured format.
-    3. Parse the LLM's response to construct and return the merged Entity object
-       (or None if model decides they do not represent the same concept).
-
     :param cluster_entities: A list of Entity objects belonging to the same cluster.
-    :param openai_api_key: Your OpenAI API key.
-    :param model: Which chat model to use (e.g., gpt-3.5-turbo, gpt-4).
-    :return: A single merged Entity or None if the model advises not to merge.
+    :param only_count_token: If True, only return the token count of the prompt without calling LLM
+    :param model_kwargs: Additional arguments to pass to the LLM client
+    :return: A single merged Entity or token count (if only_count_token=True)
     """
     if not cluster_entities:
         return None
@@ -340,12 +402,92 @@ Here is the cluster data as a JSON list:
 Please produce the merged entity as JSON with keys (name, description, meta). If you determine these are not the same entity, simply return {{}}.
 """
 
+    if only_count_token:
+        model = model_kwargs.get("model", "gpt-4o")
+        return count_tokens(prompt, model)
+
     try:
         # Call OpenAI ChatCompletion
-        response = llm_client.generate(prompt=prompt)
+        response = llm_client.generate(prompt=prompt, **model_kwargs)
 
         json_object = extract_json(response)
         return json.loads(json_object)
     except Exception as e:
         print("[ERROR in call_llm_to_merge_entities]:", str(e))
         raise e
+
+
+def group_mergeable_entities(
+    llm_client: LLMInterface, cluster_entities: List, **model_kwargs
+) -> List[List]:
+    """
+    Analyze a group of entities and identify subgroups that can be merged together.
+
+    :param llm_client: LLM interface for making the determination
+    :param cluster_entities: List of Entity objects to evaluate
+    :return: List of lists, where each inner list contains entities that can be merged
+    """
+    if not cluster_entities or len(cluster_entities) < 2:
+        return []
+
+    # Prepare the cluster data in JSON
+    cluster_data = []
+    for idx, e in enumerate(cluster_entities):
+        cluster_data.append(
+            {
+                "index": idx,  # Using array index as identifier
+                "name": e.name,
+                "description": e.description,
+                "meta": e.meta if e.meta else {},
+            }
+        )
+
+    prompt = f"""You are a knowledge expert assistant. Your task is to analyze the following entities and identify which ones represent the same underlying concepts and can be merged together.
+
+Please analyze:
+1. Names: Look for same concepts with variations (e.g., "PostgreSQL" vs "Postgres")
+2. Descriptions: Identify descriptions that describe the same thing from different angles
+3. Metadata: Check if metadata is complementary or contradictory
+
+Rules for grouping:
+- Entities should clearly refer to the same concept, tool, or technology
+- Minor variations in names are acceptable if they clearly refer to the same thing
+- Descriptions should be complementary or overlapping, not contradictory
+- Metadata should not contain conflicting critical information
+
+Here are the entities to analyze:
+{json.dumps(cluster_data, indent=2)}
+
+Please respond with a JSON object containing groups of mergeable entities:
+{{
+    "groups": [
+        {{
+            "indices": [list of entity indices that can be merged],
+            "reason": "brief explanation why these entities can be merged"
+        }},
+        // ... more groups if applicable
+    ]
+}}
+
+Note: Each entity should appear in at most one group. If an entity cannot be merged with any others, exclude it from the results.
+"""
+
+    try:
+        response = llm_client.generate(prompt=prompt, **model_kwargs)
+        result = json.loads(extract_json(response))
+
+        # Convert the LLM response into groups of actual entity objects
+        mergeable_groups = []
+
+        for group in result.get("groups", []):
+            indices = group.get("indices", [])
+            entity_group = [
+                cluster_entities[idx] for idx in indices if idx < len(cluster_entities)
+            ]
+            if len(entity_group) >= 2:  # Only include groups with at least 2 entities
+                mergeable_groups.append(entity_group)
+
+        return mergeable_groups
+    except Exception as e:
+        print("[ERROR in group_mergeable_entities]:", str(e))
+        return []
