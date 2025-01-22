@@ -18,6 +18,7 @@ tqdm = "^4.67.1"
 openai = "^1.58.1"
 pandas = "^2.2.3"
 google-genai = "^0.3.0"
+tiktoken = "^0.8.0"
 
 
 [build-system]
