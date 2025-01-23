@@ -167,6 +167,38 @@ class EntityAggregator:
             .all()
         )
 
+    def get_entities_by_name_groups(self, min_group_size: int = 10, offset: int = 0, limit: int = 10000) -> List:
+        """
+        Retrieve entities that have duplicate names (name appears more than min_group_size times).
+        
+        :param min_group_size: Minimum number of entities that should share the same name
+        :param offset: The starting index from which to begin retrieving records
+        :param limit: The maximum number of records to retrieve
+        :return: A list of Entity objects that belong to groups with size >= min_group_size
+        """
+        from sqlalchemy import func
+        
+        # First, find names that appear multiple times
+        name_counts = (
+            self.db_session.query(
+                self._entity_model.name,
+                func.count(self._entity_model.id).label('name_count')
+            )
+            .group_by(self._entity_model.name)
+            .having(func.count(self._entity_model.id) >= min_group_size)
+            .subquery()
+        )
+        
+        # Then get all entities with these names
+        return (
+            self.db_session.query(self._entity_model)
+            .join(name_counts, self._entity_model.name == name_counts.c.name)
+            .order_by(self._entity_model.name, self._entity_model.id)
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
     def cluster_entities(
         self,
         entities,
@@ -285,38 +317,6 @@ class EntityAggregator:
         entities = self.get_entities()
         return self.cluster_entities(entities, similarity_threshold=threshold)
 
-    def get_entities_by_name_groups(self, min_group_size: int = 10, offset: int = 0, limit: int = 10000) -> List:
-        """
-        Retrieve entities that have duplicate names (name appears more than min_group_size times).
-        
-        :param min_group_size: Minimum number of entities that should share the same name
-        :param offset: The starting index from which to begin retrieving records
-        :param limit: The maximum number of records to retrieve
-        :return: A list of Entity objects that belong to groups with size >= min_group_size
-        """
-        from sqlalchemy import func
-        
-        # First, find names that appear multiple times
-        name_counts = (
-            self.db_session.query(
-                self._entity_model.name,
-                func.count(self._entity_model.id).label('name_count')
-            )
-            .group_by(self._entity_model.name)
-            .having(func.count(self._entity_model.id) >= min_group_size)
-            .subquery()
-        )
-        
-        # Then get all entities with these names
-        return (
-            self.db_session.query(self._entity_model)
-            .join(name_counts, self._entity_model.name == name_counts.c.name)
-            .order_by(self._entity_model.name, self._entity_model.id)
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
-
 
 def should_merge_entities(
     llm_client: LLMInterface, cluster_entities: List, **model_kwargs
@@ -342,62 +342,30 @@ def should_merge_entities(
             }
         )
 
-    prompt = f"""You are a knowledge expert assistant specialized in database technologies. You are given a cluster of entities that need to be merged. Each entity contains:
-- name: A short string identifier (e.g., "TiKV")
-- description: A potentially extensive text describing the entity
-- meta: A JSON-like object containing additional data
+        prompt = f"""You are a knowledge expert assistant. Your task is to determine if the following entities represent the same underlying concept and should be merged.
 
-CORE PRINCIPLES:
-1. Information Preservation
-   - Minimize information loss during merging
-   - Preserve unique details and perspectives from each entity
-   - When encountering similar content, carefully analyze for subtle differences
+Please analyze:
+1. Names: Are they the same concept with slight variations (e.g., "PostgreSQL" vs "Postgres")?
+2. Descriptions: Do they describe the same thing from different angles or with different levels of detail?
+3. Metadata: Is the metadata complementary or contradictory?
 
-2. Content Coherence
-   - Maintain logical flow and readability in the merged content
-   - Group related information together
-   - Use clear structure to organize different aspects of information
+Rules for determining merger:
+- Entities should clearly refer to the same concept, tool, or technology
+- Minor variations in names are acceptable if they clearly refer to the same thing
+- Descriptions should be complementary or overlapping, not contradictory
+- Metadata should not contain conflicting critical information
 
-3. Consistency Check
-   - Ensure merged content remains technically accurate
-   - Resolve any apparent contradictions by preserving both viewpoints
-   - Maintain the original context of each piece of information
-
-Merging Guidelines:
-
-1. Description Merging:
-   - Start with the most comprehensive description as a base
-   - Incorporate unique details from other descriptions
-   - Use clear transitions between different aspects
-   - If information seems contradictory, preserve both versions with appropriate context
-
-2. Metadata Handling:
-   - Combine all metadata fields while preserving their original context
-   - For similar fields, analyze for subtle differences before merging
-   - Use arrays or structured formats to preserve multiple valid values
-
-3. Name Selection:
-   - Choose the most widely recognized or official name
-   - Document significant name variations in metadata
-
-Here is the cluster data as a JSON list:
+Here are the entities to analyze:
 {json.dumps(cluster_data, indent=2)}
 
-Return a JSON object with the merged entity. Prioritize information preservation while maintaining readability:
-
-```json
-{{
-"name": "...",
-"description": "...",
-"meta": {{}}
-}}
-```
+Please respond with a JSON object containing:
+{{"should_merge": true/false, "reason": "brief explanation of your decision"}}
 """
 
     try:
         response = llm_client.generate(prompt=prompt, **model_kwargs)
         result = json.loads(extract_json(response))
-        return result.get("should_merge", False)
+        return result
     except Exception as e:
         print("[ERROR in should_merge_entities]:", str(e))
         return False
