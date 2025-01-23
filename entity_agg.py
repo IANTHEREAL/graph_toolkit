@@ -453,7 +453,7 @@ Merging Guidelines:
 Here is the cluster data as a JSON list:
 {json.dumps(cluster_data, indent=2)}
 
-Return a JSON object with the merged entity. Prioritize information preservation while maintaining readability:
+Return a JSON object with the merged entity. Prioritize information preservation while maintaining readability. Important: Ensure the output is a valid JSON - avoid using any control characters or special characters that might break JSON parsing:
 
 ```json
 {{
@@ -471,10 +471,11 @@ Return a JSON object with the merged entity. Prioritize information preservation
     try:
         # Call OpenAI ChatCompletion
         response = llm_client.generate(prompt=prompt, **model_kwargs)
-        json_object = extract_json(response)
-        return json.loads(json_object)
+        json_str = extract_json(response)
+        json_str = ''.join(char for char in json_str if ord(char) >= 32 or char in '\n\r\t')
+        return json.loads(json_str)
     except Exception as e:
-        print("[ERROR in call_llm_to_merge_entities]:", str(e), response)
+        print("[ERROR in call_llm_to_merge_entities]:", str(e), json_str)
         raise e
 
 
