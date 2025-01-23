@@ -148,6 +148,24 @@ class EntityAggregator:
             .limit(limit)
             .all()
         )
+    
+    def get_entities_by_name(self, names:List[str], offset: int = 0, limit: int = 10000) -> List:
+        """
+        Retrieve a list of Entity objects from the database using the specified
+        offset and limit.
+
+        :param offset: The starting index from which to begin retrieving records.
+        :param limit: The maximum number of records to retrieve.
+        :return: A list of Entity objects.
+        """
+        return (
+            self.db_session.query(self._entity_model)
+            .filter(self._entity_model.name.in_(names))
+            .order_by(self._entity_model.id)
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
 
     def cluster_entities(
         self,
@@ -267,6 +285,38 @@ class EntityAggregator:
         entities = self.get_entities()
         return self.cluster_entities(entities, similarity_threshold=threshold)
 
+    def get_entities_by_name_groups(self, min_group_size: int = 10, offset: int = 0, limit: int = 10000) -> List:
+        """
+        Retrieve entities that have duplicate names (name appears more than min_group_size times).
+        
+        :param min_group_size: Minimum number of entities that should share the same name
+        :param offset: The starting index from which to begin retrieving records
+        :param limit: The maximum number of records to retrieve
+        :return: A list of Entity objects that belong to groups with size >= min_group_size
+        """
+        from sqlalchemy import func
+        
+        # First, find names that appear multiple times
+        name_counts = (
+            self.db_session.query(
+                self._entity_model.name,
+                func.count(self._entity_model.id).label('name_count')
+            )
+            .group_by(self._entity_model.name)
+            .having(func.count(self._entity_model.id) >= min_group_size)
+            .subquery()
+        )
+        
+        # Then get all entities with these names
+        return (
+            self.db_session.query(self._entity_model)
+            .join(name_counts, self._entity_model.name == name_counts.c.name)
+            .order_by(self._entity_model.name, self._entity_model.id)
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
 
 def should_merge_entities(
     llm_client: LLMInterface, cluster_entities: List, **model_kwargs
@@ -292,24 +342,56 @@ def should_merge_entities(
             }
         )
 
-    prompt = f"""You are a knowledge expert assistant. Your task is to determine if the following entities represent the same underlying concept and should be merged.
+    prompt = f"""You are a knowledge expert assistant specialized in database technologies. You are given a cluster of entities that need to be merged. Each entity contains:
+- name: A short string identifier (e.g., "TiKV")
+- description: A potentially extensive text describing the entity
+- meta: A JSON-like object containing additional data
 
-Please analyze:
-1. Names: Are they the same concept with slight variations (e.g., "PostgreSQL" vs "Postgres")?
-2. Descriptions: Do they describe the same thing from different angles or with different levels of detail?
-3. Metadata: Is the metadata complementary or contradictory?
+CORE PRINCIPLES:
+1. Information Preservation
+   - Minimize information loss during merging
+   - Preserve unique details and perspectives from each entity
+   - When encountering similar content, carefully analyze for subtle differences
 
-Rules for determining merger:
-- Entities should clearly refer to the same concept, tool, or technology
-- Minor variations in names are acceptable if they clearly refer to the same thing
-- Descriptions should be complementary or overlapping, not contradictory
-- Metadata should not contain conflicting critical information
+2. Content Coherence
+   - Maintain logical flow and readability in the merged content
+   - Group related information together
+   - Use clear structure to organize different aspects of information
 
-Here are the entities to analyze:
+3. Consistency Check
+   - Ensure merged content remains technically accurate
+   - Resolve any apparent contradictions by preserving both viewpoints
+   - Maintain the original context of each piece of information
+
+Merging Guidelines:
+
+1. Description Merging:
+   - Start with the most comprehensive description as a base
+   - Incorporate unique details from other descriptions
+   - Use clear transitions between different aspects
+   - If information seems contradictory, preserve both versions with appropriate context
+
+2. Metadata Handling:
+   - Combine all metadata fields while preserving their original context
+   - For similar fields, analyze for subtle differences before merging
+   - Use arrays or structured formats to preserve multiple valid values
+
+3. Name Selection:
+   - Choose the most widely recognized or official name
+   - Document significant name variations in metadata
+
+Here is the cluster data as a JSON list:
 {json.dumps(cluster_data, indent=2)}
 
-Please respond with a JSON object containing:
-{{"should_merge": true/false, "reason": "brief explanation of your decision"}}
+Return a JSON object with the merged entity. Prioritize information preservation while maintaining readability:
+
+```json
+{{
+"name": "...",
+"description": "...",
+"meta": {{}}
+}}
+```
 """
 
     try:
@@ -362,44 +444,56 @@ def merge_entities(
         )
 
     # Build system instruction (Prompt design)
-    prompt = f"""You are a knowledge expert assistant specialized in database technologies. You are given a cluster of entities, each containing:
+    prompt = f"""You are a knowledge expert assistant specialized in database technologies. You are given a cluster of entities that need to be merged. Each entity contains:
 - name: A short string identifier (e.g., "TiKV")
 - description: A potentially extensive text describing the entity
 - meta: A JSON-like object containing additional data
 
-Your task is to determine how to consolidate all entities within this cluster into a single merged entity, given that they are deemed to represent the same underlying concept, object, or topic.
-Detailed Instructions:
+CORE PRINCIPLES:
+1. Information Preservation
+   - Minimize information loss during merging
+   - Preserve unique details and perspectives from each entity
+   - When encountering similar content, carefully analyze for subtle differences
 
-1. Merge Descriptions:
-- Combine or summarize the various descriptions into one cohesive, consolidated description.
-- Avoid simple concatenation if there is redundant or overlapping text.
-- Preserve all critical information from any of the descriptions so that the final text covers the full spectrum of details provided by the original entities.
+2. Content Coherence
+   - Maintain logical flow and readability in the merged content
+   - Group related information together
+   - Use clear structure to organize different aspects of information
 
-2. Merge Meta Fields:
-- Gather all relevant key-value pairs from the meta fields of the individual entities.
-- If there are conflicting keys with different values, reconcile or list them together so that no important detail is lost.
-- If there is duplicative or highly similar content, unify them.
+3. Consistency Check
+   - Ensure merged content remains technically accurate
+   - Resolve any apparent contradictions by preserving both viewpoints
+   - Maintain the original context of each piece of information
 
-3. Preserve the Name:
-- Since these entities are in the same cluster, they presumably share a consistent name (e.g., "TiKV").
-- If minor variations exist (case changes, slight synonyms), choose the most representative or official name.
+Merging Guidelines:
 
-4. Final Output: 
-- Return a new, consolidated entity json object containing keys:  "name" (string), "description" (merged/summarized text), "meta" (merged metadata)
-- If you conclude the entities do not actually represent the same concept, return empty json object {{}} for the merged entity (though in this scenario, we assume the cluster truly means they are duplicates).
+1. Description Merging:
+   - Start with the most comprehensive description as a base
+   - Incorporate unique details from other descriptions
+   - Use clear transitions between different aspects
+   - If information seems contradictory, preserve both versions with appropriate context
 
-5. Content Accuracy:
-- Ensure that the merged summary strictly reflects the actual content of the cluster entities.
-- Do not incorporate any external information or rely on prior knowledge not present in the provided cluster data.
+2. Metadata Handling:
+   - Combine all metadata fields while preserving their original context
+   - For similar fields, analyze for subtle differences before merging
+   - Use arrays or structured formats to preserve multiple valid values
 
-Considerations:
-- Make sure the final entity retains all essential context from across the cluster.
-- Do not lose important details or source references that could be crucial for domain-specific knowledge.
-- The final output should be logically consistent and readable.
+3. Name Selection:
+   - Choose the most widely recognized or official name
+   - Document significant name variations in metadata
 
 Here is the cluster data as a JSON list:
 {json.dumps(cluster_data, indent=2)}
-Please produce the merged entity as JSON with keys (name, description, meta). If you determine these are not the same entity, simply return {{}}.
+
+Return a JSON object with the merged entity. Prioritize information preservation while maintaining readability:
+
+```json
+{{
+"name": "...",
+"description": "...",
+"meta": {{}}
+}}
+```
 """
 
     if only_count_token:
@@ -409,11 +503,10 @@ Please produce the merged entity as JSON with keys (name, description, meta). If
     try:
         # Call OpenAI ChatCompletion
         response = llm_client.generate(prompt=prompt, **model_kwargs)
-
         json_object = extract_json(response)
         return json.loads(json_object)
     except Exception as e:
-        print("[ERROR in call_llm_to_merge_entities]:", str(e))
+        print("[ERROR in call_llm_to_merge_entities]:", str(e), response)
         raise e
 
 
@@ -432,10 +525,10 @@ def group_mergeable_entities(
 
     # Prepare the cluster data in JSON
     cluster_data = []
-    for idx, e in enumerate(cluster_entities):
+    for e in cluster_entities:
         cluster_data.append(
             {
-                "index": idx,  # Using array index as identifier
+                "id": e.id,  # Using array index as identifier
                 "name": e.name,
                 "description": e.description,
                 "meta": e.meta if e.meta else {},
@@ -462,7 +555,7 @@ Please respond with a JSON object containing groups of mergeable entities:
 {{
     "groups": [
         {{
-            "indices": [list of entity indices that can be merged],
+            "ids": [list of entity ids that can be merged],
             "reason": "brief explanation why these entities can be merged"
         }},
         // ... more groups if applicable
@@ -480,14 +573,16 @@ Note: Each entity should appear in at most one group. If an entity cannot be mer
         mergeable_groups = []
 
         for group in result.get("groups", []):
-            indices = group.get("indices", [])
+            ids = group.get("ids", [])
             entity_group = [
-                cluster_entities[idx] for idx in indices if idx < len(cluster_entities)
+                entity for entity in cluster_entities 
+                if entity.id in ids
             ]
+                    
             if len(entity_group) >= 2:  # Only include groups with at least 2 entities
                 mergeable_groups.append(entity_group)
 
         return mergeable_groups
     except Exception as e:
-        print("[ERROR in group_mergeable_entities]:", str(e))
+        print("[ERROR in group_mergeable_entities]:", str(e), response)
         return []

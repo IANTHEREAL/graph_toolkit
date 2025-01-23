@@ -3,3 +3,4 @@
 *_dev.ipynb
 *_dev.py
 *.pkl
+.DS_Store
