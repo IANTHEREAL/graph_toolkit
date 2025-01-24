@@ -468,14 +468,15 @@ Return a JSON object with the merged entity. Prioritize information preservation
         model = model_kwargs.get("model", "gpt-4o")
         return count_tokens(prompt, model)
 
+    json_str = None
     try:
         # Call OpenAI ChatCompletion
         response = llm_client.generate(prompt=prompt, **model_kwargs)
         json_str = extract_json(response)
-        json_str = ''.join(char for char in json_str if ord(char) >= 32 or char in '\n\r\t')
+        json_str = ''.join(char for char in json_str if ord(char) >= 32 or char in '\r\t')
         return json.loads(json_str)
     except Exception as e:
-        print("[ERROR in call_llm_to_merge_entities]:", str(e), json_str)
+        print("[ERROR in call_llm_to_merge_entities]:", str(e), json_str or response)
         raise e
 
 
