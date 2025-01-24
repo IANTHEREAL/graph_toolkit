@@ -148,8 +148,10 @@ class EntityAggregator:
             .limit(limit)
             .all()
         )
-    
-    def get_entities_by_name(self, names:List[str], offset: int = 0, limit: int = 10000) -> List:
+
+    def get_entities_by_name(
+        self, names: List[str], offset: int = 0, limit: int = 10000
+    ) -> List:
         """
         Retrieve a list of Entity objects from the database using the specified
         offset and limit.
@@ -167,28 +169,30 @@ class EntityAggregator:
             .all()
         )
 
-    def get_entities_by_name_groups(self, min_group_size: int = 10, offset: int = 0, limit: int = 10000) -> List:
+    def get_entities_by_name_groups(
+        self, min_group_size: int = 10, offset: int = 0, limit: int = 10000
+    ) -> List:
         """
         Retrieve entities that have duplicate names (name appears more than min_group_size times).
-        
+
         :param min_group_size: Minimum number of entities that should share the same name
         :param offset: The starting index from which to begin retrieving records
         :param limit: The maximum number of records to retrieve
         :return: A list of Entity objects that belong to groups with size >= min_group_size
         """
         from sqlalchemy import func
-        
+
         # First, find names that appear multiple times
         name_counts = (
             self.db_session.query(
                 self._entity_model.name,
-                func.count(self._entity_model.id).label('name_count')
+                func.count(self._entity_model.id).label("name_count"),
             )
             .group_by(self._entity_model.name)
             .having(func.count(self._entity_model.id) >= min_group_size)
             .subquery()
         )
-        
+
         # Then get all entities with these names
         return (
             self.db_session.query(self._entity_model)
@@ -473,7 +477,9 @@ Return a JSON object with the merged entity. Prioritize information preservation
         # Call OpenAI ChatCompletion
         response = llm_client.generate(prompt=prompt, **model_kwargs)
         json_str = extract_json(response)
-        json_str = ''.join(char for char in json_str if ord(char) >= 32 or char in '\r\t')
+        json_str = "".join(
+            char for char in json_str if ord(char) >= 32 or char in "\r\t"
+        )
         return json.loads(json_str)
     except Exception as e:
         print("[ERROR in call_llm_to_merge_entities]:", str(e), json_str or response)
@@ -544,11 +550,8 @@ Note: Each entity should appear in at most one group. If an entity cannot be mer
 
         for group in result.get("groups", []):
             ids = group.get("ids", [])
-            entity_group = [
-                entity for entity in cluster_entities 
-                if entity.id in ids
-            ]
-                    
+            entity_group = [entity for entity in cluster_entities if entity.id in ids]
+
             if len(entity_group) >= 2:  # Only include groups with at least 2 entities
                 mergeable_groups.append(entity_group)
 
