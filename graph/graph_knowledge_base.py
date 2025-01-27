@@ -219,3 +219,23 @@ class GraphKnowledgeBase:
             }
             for chunk in chunks
         ]
+    
+    def get_document_content(self, session: Session, doc_links: List[str]) -> List[Dict[str, Any]]:
+        """select content from documents where source_uri = 'https://docs.pingcap.com/tidb/v8.1/release-1.0.2'"""
+        doc_sql = text(
+            f"""
+            SELECT id, content, source_uri as doc_link
+            FROM {self._document_table}
+            WHERE source_uri IN :doc_links
+        """
+        )
+
+        docs = session.execute(doc_sql, {"doc_links": doc_links}).fetchall()
+        return [
+            {
+                "id": doc.id,
+                "content": doc.content,
+                "doc_link": doc.doc_link,
+            }
+            for doc in docs
+        ]

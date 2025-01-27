@@ -7,12 +7,11 @@ from rank_bm25 import BM25Okapi
 from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 from joblib import Parallel, delayed  # For parallel computation
-import tiktoken  # Add this import at the top
 
 from models.entity import get_entity_model
 from llm_inference.base import LLMInterface
 from json_utils import extract_json
-
+from utils.token import count_tokens
 # ----------------------------------------------------
 # Helper Functions or Static Methods
 # ----------------------------------------------------
@@ -373,19 +372,6 @@ Please respond with a JSON object containing:
     except Exception as e:
         print("[ERROR in should_merge_entities]:", str(e))
         return False
-
-
-def count_tokens(text: str, model: str = "gpt-4o") -> int:
-    """
-    Count the number of tokens in a text string.
-
-    :param text: The text to count tokens for
-    :param model: The model name to use for token counting (default: gpt-4o)
-    :return: Number of tokens
-    """
-    encoding = tiktoken.encoding_for_model(model)
-    return len(encoding.encode(text))
-
 
 def merge_entities(
     llm_client: LLMInterface,
