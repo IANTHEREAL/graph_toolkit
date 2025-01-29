@@ -5,6 +5,7 @@ import logging
 import datetime
 
 from utils.json_utils import extract_json
+from .graph_knowledge_base import SearchAction, DocumentData
 
 # ---------------------------
 # Data Structures
@@ -31,21 +32,6 @@ class Finding:
             "is_supplementary": self.is_supplementary,
             "reasoning": self.reasoning,
         }
-
-
-@dataclass
-class SearchAction:
-    """Represents a next search action"""
-
-    tool: Literal["retrieve_knowledge", "retrieve_neighbors"]
-    query: str
-    entity_ids: Optional[List[int]] = None  # For retrieve_neighbors
-
-    def to_dict(self):
-        return {"tool": self.tool, "query": self.query, "entity_ids": self.entity_ids}
-
-    def __str__(self):
-        return f"SearchAction(tool={self.tool}, query={self.query}, entity_ids={self.entity_ids})"
 
 
 @dataclass
@@ -307,3 +293,103 @@ Important:
         except (KeyError, json.JSONDecodeError) as e:
             logging.error(f"Failed to evaluate findings: {str(e)}", exc_info=True)
             raise ValueError("Invalid evaluation response") from e
+
+    def iterative_answer_synthesis(
+        self, query: str, documents: Dict[str, DocumentData], reasoning: str
+    ) -> Dict:
+        """
+        Iteratively process documents to build and refine an answer to the query.
+
+        Args:
+            query: The original query to answer
+            documents: Dictionary of documents sorted by relevance
+            reasoning: Initial reasoning about the query
+
+        Returns:
+            Dict containing the final answer and its evolution history
+        """
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        answer_state = {
+            "current_answer": "",
+            "history": [],  # Track how the answer evolved
+        }
+
+        for doc_id, doc in documents.items():
+            print(f"Processing document({doc_id}, {doc.doc_link})")
+
+            prompt = f"""Current Time: {current_time}
+
+Your task is to help build and improve an answer to a query by analyzing new information.
+
+Original Query: {query}
+Query Analysis: {reasoning}
+
+Current Answer: {answer_state["current_answer"] if answer_state["current_answer"] else "No answer yet."}
+
+New Document Content:
+{doc.content}
+
+GUIDELINES:
+
+1. If this is the first document:
+   - Form an initial answer based on relevant information
+   - Consider the temporal aspects of the information (when was it created/updated)
+
+2. For subsequent documents:
+   - Review the current answer
+   - Correct any outdated or incorrect information
+   - Pay special attention to dates and versions - newer information generally supersedes older information
+   - Remove any information that has been proven wrong from the current answer
+   - Add new relevant information from the document to the current answer
+   - Improve the clarity and completeness of the answer
+
+3. Focus on:
+   - Accuracy and relevance to the query
+   - Latest status of things (based on timestamps and version information)
+   - Clarity and coherence of the answer
+   - Removing outdated or incorrect information
+
+Please provide your response in this format:
+{{
+    "updated_answer": "The complete updated answer",
+    "changes_made": "Explanation of what was added, removed, or modified and why",
+    "temporal_reasoning": "Explanation of how time/version information influenced the updates"
+}}
+
+Remember:
+- Newer information generally takes precedence over older information
+- Be explicit about uncertainties
+- Focus on building a clear, accurate answer
+"""
+
+            try:
+                # Get LLM's analysis and updates
+                raw_response = self.llm.generate(prompt)
+                json_str = extract_json(raw_response)
+                update_data = json.loads(json_str)
+
+                print(f"Update data: {update_data}")
+
+                # Update answer state
+                answer_state["current_answer"] = update_data["updated_answer"]
+
+                # Track the evolution
+                answer_state["history"].append(
+                    {
+                        "doc_link": doc.doc_link,
+                        "changes_made": update_data["changes_made"],
+                        "temporal_reasoning": update_data["temporal_reasoning"],
+                    }
+                )
+
+            except (KeyError, json.JSONDecodeError) as e:
+                logging.error(
+                    f"Failed to process document {doc.doc_link}: {str(e)}",
+                    exc_info=True,
+                )
+                continue
+
+        return {
+            "final_answer": answer_state["current_answer"],
+            "evolution_history": answer_state["history"],
+        }
