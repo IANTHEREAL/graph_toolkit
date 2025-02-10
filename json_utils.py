@@ -22,6 +22,7 @@ def extract_json(plan_response: str) -> str:
 
     return json_str
 
+
 def find_first_json_object(text: str) -> Optional[str]:
     """Find the first JSON object in the given text."""
     stack = []
@@ -37,4 +38,3 @@ def find_first_json_object(text: str) -> Optional[str]:
                 if not stack:
                     return text[start : i + 1]
     return None
-

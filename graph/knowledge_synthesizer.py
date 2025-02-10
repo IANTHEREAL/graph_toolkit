@@ -319,73 +319,90 @@ Important:
 
             prompt = f"""Current Time: {current_time}
 
-Your task is to help build and improve an answer to a query by analyzing new information.
+Your task is to strategically incorporate new information while maintaining answer quality.
 
 Original Query: {query}
-Query Analysis: {reasoning}
+Current Answer State: {answer_state["current_answer"] or "No answer yet"}
+Document Source: {doc.doc_link}
+Document Content: {doc.content}
 
-Current Answer: {answer_state["current_answer"] if answer_state["current_answer"] else "No answer yet."}
+Analysis Framework:
+1. Value Assessment:
+   - Identify novel information not in current answer
+   - Detect more recent versions of existing facts
+   - Find complementary perspectives/evidence
+   - Verify source credibility compared to existing sources
 
-New Document Content:
-{doc.content}
+2. Update Decision Criteria (proceed only if):
+   - Contains verifiable information missing from current answer
+   - Provides higher-confidence evidence for existing claims
+   - Offers critical context for understanding key points
+   - Presents equally valid alternative perspectives
 
-Document Link: {doc.doc_link}
+3. Information Integration Rules:
+   - Preserve superior existing information when:
+     * Current evidence is from more reliable sources
+     * Existing version has broader consensus
+     * New data doesn't improve clarity/completeness
+   - Prefer concise synthesis over redundant accumulation
+   - Mark deprecated information with [Superseded] tags
+   - Maintain version history in footnotes
 
-GUIDELINES:
-
-1. If this is the first document:
-   - Form an initial answer based on relevant information
-   - Consider the temporal aspects of the information (when was it created/updated)
-
-2. For subsequent documents:
-   - Review the current answer
-   - Correct any outdated or incorrect information
-   - Pay special attention to dates and versions - newer information generally supersedes older information
-   - Remove any information that has been proven wrong from the current answer
-   - Add new relevant information from the document to the current answer
-   - Improve the clarity and completeness of the answer
-
-3. Focus on:
-   - Accuracy and relevance to the query
-   - Latest status of things (based on timestamps and version information)
-   - Clarity and coherence of the answer
-   - Removing outdated or incorrect information
-
-Please provide your response in this format:
+Output Format:
 {{
-    "updated_answer": "The complete updated answer",
-    "changes_made": "Explanation of what was added, removed, or modified and why",
-    "temporal_reasoning": "Explanation of how time/version information influenced the updates"
+    "should_skip": boolean,
+    "skip_reason": "Required if should_skip=true",
+    "updated_answer": "Revised answer (unchanged if should_skip=true)",
+    "change_breakdown": {{
+        "improvements": ["List of substantive upgrades"],
+        "preserved_content": ["Key maintained elements"],
+        "deprecated_items": ["Outdated information replaced"]
+    }},
+    "confidence_impact": "+X%/-X% based on changes"
 }}
 
-Remember:
-- Newer information generally takes precedence over older information
-- Be explicit about uncertainties
-- Focus on building a clear, accurate answer
+Quality Assurance:
+- Skip if document adds <10% new relevant content
+- Skip when confidence impact would be <+5%
+- Require minimum two independent sources for major changes
+- Preserve superior phrasing from existing answer
+- Prefer older established facts over new unverified claims
+- Maintain traceability through source anchors
 """
             try:
                 MAX_RETRIES = 3
                 for retry_count in range(MAX_RETRIES):
                     try:
-                        # Get LLM's analysis and updates
                         raw_response = self.llm.generate(prompt)
                         json_str = extract_json(raw_response)
                         update_data = json.loads(json_str)
 
-                        print(f"Update data: {update_data}")
+                        if update_data.get("should_skip", False):
+                            print(f"Skipped document: {update_data['skip_reason']}")
+                            continue
 
-                        # Update answer state
+                        print(
+                            f"Quality improvements: {update_data['change_breakdown']['improvements']}"
+                        )
+
+                        # Update answer state only if not skipped
                         answer_state["current_answer"] = update_data["updated_answer"]
 
-                        # Track the evolution
+                        # Track evolution with more granular metadata
                         answer_state["history"].append(
                             {
                                 "doc_link": doc.doc_link,
-                                "changes_made": update_data["changes_made"],
-                                "temporal_reasoning": update_data["temporal_reasoning"],
+                                "changes": update_data["change_breakdown"],
+                                "confidence_change": update_data["confidence_impact"],
+                                "update_decision": (
+                                    "Applied"
+                                    if not update_data["should_skip"]
+                                    else "Skipped"
+                                ),
+                                "decision_reason": update_data.get("skip_reason", ""),
                             }
                         )
-                        break  # Success - exit retry loop
+                        break
 
                     except (KeyError, json.JSONDecodeError) as e:
                         if retry_count == MAX_RETRIES - 1:  # Last retry

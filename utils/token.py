@@ -1,5 +1,6 @@
 import tiktoken
 
+
 def count_tokens(text: str, model: str = "gpt-4o") -> int:
     """
     Count the number of tokens in a text string.

@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional, Literal
 from sqlmodel import Session
 from sqlalchemy import text
 
+from graph.chunk_filter import ChunkFilter
+
 embedding_model = openai.OpenAI()
 
 
@@ -111,6 +113,7 @@ class GraphRetrievalResult:
 class GraphKnowledgeBase:
     def __init__(
         self,
+        llm_client,
         entity_table_name,
         relationship_table_name,
         chunk_table_name,
@@ -120,6 +123,7 @@ class GraphKnowledgeBase:
         self._relationship_table = relationship_table_name
         self._chunk_table = chunk_table_name
         self._document_table = document_table_name
+        self.chunk_filter = ChunkFilter(llm_client, 5, 1)
 
     def retrieve_graph_data(
         self,
@@ -353,29 +357,20 @@ class GraphKnowledgeBase:
         similarity_threshold: float = 0.5,
     ) -> GraphRetrievalResult:
         query_embedding = get_text_embedding(query_text)
+
+        # First get relationships with similarity scores
         relationship_sql = text(
             f"""
-            WITH ranked_docs AS (
-                SELECT 
-                    r.id, r.description, r.chunk_id,
-                    se.id as source_id, se.name as source_name, se.description as source_description,
-                    te.id as target_id, te.name as target_name, te.description as target_description,
-                    r.document_id,
-                    (1 - VEC_COSINE_DISTANCE(r.description_vec, :query_embedding)) as similarity,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY r.document_id
-                        ORDER BY (1 - VEC_COSINE_DISTANCE(r.description_vec, :query_embedding)) DESC
-                    ) as rank_in_doc
-                FROM {self._relationship_table} r
-                JOIN {self._entity_table} se ON r.source_entity_id = se.id
-                JOIN {self._entity_table} te ON r.target_entity_id = te.id
-                WHERE (1 - VEC_COSINE_DISTANCE(r.description_vec, :query_embedding)) >= :threshold
-            )
-            SELECT *
-            FROM ranked_docs
-            WHERE rank_in_doc = 1
-            ORDER BY similarity DESC
-            LIMIT :limit
+            SELECT
+                r.id, r.description, r.chunk_id,
+                se.id as source_id, se.name as source_name, se.description as source_description,
+                te.id as target_id, te.name as target_name, te.description as target_description,
+                r.document_id,
+                (1 - VEC_COSINE_DISTANCE(r.description_vec, :query_embedding)) as similarity
+            FROM {self._relationship_table} r
+            JOIN {self._entity_table} se ON r.source_entity_id = se.id
+            JOIN {self._entity_table} te ON r.target_entity_id = te.id
+            WHERE (1 - VEC_COSINE_DISTANCE(r.description_vec, :query_embedding)) >= :threshold
             """
         )
 
@@ -384,11 +379,36 @@ class GraphKnowledgeBase:
             {
                 "query_embedding": str(query_embedding),
                 "threshold": similarity_threshold,
-                "limit": top_k,
             },
         ).fetchall()
 
-        doc_ids = [row.document_id for row in relationship_results]
+        # Get chunks for filtering
+        chunk_ids = [row.chunk_id for row in relationship_results]
+        if not chunk_ids:
+            return GraphRetrievalResult(documents={})
+
+        chunks = self._get_chunks(session, chunk_ids)
+
+        # Filter chunks using LLM
+        filtered_results = self.chunk_filter.filter_chunks(query_text, chunks)
+
+        # Get document IDs from relevant chunks
+        relevant_chunk_ids = {
+            result.chunk_id
+            for result in filtered_results
+            if result.is_relevant and result.confidence > 0.6
+        }
+
+        # Get document IDs from filtered chunks
+        doc_ids = []
+        for chunk in chunks:
+            if chunk["id"] in relevant_chunk_ids:
+                doc_ids.append(chunk["document_id"])
+
+        if not doc_ids:
+            return GraphRetrievalResult(documents={})
+
+        # Query documents
         docs_sql = text(
             f"""
             SELECT id, content, source_uri as doc_link
@@ -396,6 +416,7 @@ class GraphKnowledgeBase:
             WHERE id IN :doc_ids
             """
         )
+
         result = GraphRetrievalResult(documents={})
         for doc in session.execute(docs_sql, {"doc_ids": doc_ids}):
             result.documents[doc.id] = DocumentData(

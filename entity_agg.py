@@ -12,6 +12,7 @@ from models.entity import get_entity_model
 from llm_inference.base import LLMInterface
 from json_utils import extract_json
 from utils.token import count_tokens
+
 # ----------------------------------------------------
 # Helper Functions or Static Methods
 # ----------------------------------------------------
@@ -372,6 +373,7 @@ Please respond with a JSON object containing:
     except Exception as e:
         print("[ERROR in should_merge_entities]:", str(e))
         return False
+
 
 def merge_entities(
     llm_client: LLMInterface,
