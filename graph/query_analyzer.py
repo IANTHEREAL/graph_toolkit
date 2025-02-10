@@ -1,6 +1,7 @@
 import json
 import time
 import logging
+from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from functools import wraps
@@ -86,7 +87,11 @@ def retry(max_attempts: int = 3, delay: float = 1.0):
 
 
 def get_analysis_prompt(query):
-    return f"""Deeply analyze this query using first principles thinking: "{query}"
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    return f"""Current Time: {current_time}
+
+Deeply analyze this query using first principles thinking: "{query}"
 
 Goal: Understand the fundamental nature of the user's question by breaking it down to its most basic elements.
 
