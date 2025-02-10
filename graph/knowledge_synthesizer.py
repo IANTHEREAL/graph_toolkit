@@ -329,6 +329,8 @@ Current Answer: {answer_state["current_answer"] if answer_state["current_answer"
 New Document Content:
 {doc.content}
 
+Document Link: {doc.doc_link}
+
 GUIDELINES:
 
 1. If this is the first document:
@@ -361,33 +363,46 @@ Remember:
 - Be explicit about uncertainties
 - Focus on building a clear, accurate answer
 """
-
             try:
-                # Get LLM's analysis and updates
-                raw_response = self.llm.generate(prompt)
-                json_str = extract_json(raw_response)
-                update_data = json.loads(json_str)
+                MAX_RETRIES = 3
+                for retry_count in range(MAX_RETRIES):
+                    try:
+                        # Get LLM's analysis and updates
+                        raw_response = self.llm.generate(prompt)
+                        json_str = extract_json(raw_response)
+                        update_data = json.loads(json_str)
 
-                print(f"Update data: {update_data}")
+                        print(f"Update data: {update_data}")
 
-                # Update answer state
-                answer_state["current_answer"] = update_data["updated_answer"]
+                        # Update answer state
+                        answer_state["current_answer"] = update_data["updated_answer"]
 
-                # Track the evolution
-                answer_state["history"].append(
-                    {
-                        "doc_link": doc.doc_link,
-                        "changes_made": update_data["changes_made"],
-                        "temporal_reasoning": update_data["temporal_reasoning"],
-                    }
-                )
+                        # Track the evolution
+                        answer_state["history"].append(
+                            {
+                                "doc_link": doc.doc_link,
+                                "changes_made": update_data["changes_made"],
+                                "temporal_reasoning": update_data["temporal_reasoning"],
+                            }
+                        )
+                        break  # Success - exit retry loop
 
-            except (KeyError, json.JSONDecodeError) as e:
+                    except (KeyError, json.JSONDecodeError) as e:
+                        if retry_count == MAX_RETRIES - 1:  # Last retry
+                            logging.error(
+                                f"Failed to process document {doc.doc_link} after {MAX_RETRIES} retries: {str(e)}",
+                                exc_info=True,
+                            )
+                            continue  # Move to next document
+                        logging.warning(
+                            f"Retry {retry_count + 1}/{MAX_RETRIES} - Failed to process document {doc.doc_link}: {str(e)}"
+                        )
+            except Exception as e:
                 logging.error(
                     f"Failed to process document {doc.doc_link}: {str(e)}",
                     exc_info=True,
                 )
-                continue
+                continue  # Move to next document
 
         return {
             "final_answer": answer_state["current_answer"],
