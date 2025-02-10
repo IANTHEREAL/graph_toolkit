@@ -439,9 +439,6 @@ Return a JSON object with the enhanced entity information:
             if not entities:
                 break
 
-            print(entities)
-            return
-
             for entity_data in entities:
                 try:
                     print(
