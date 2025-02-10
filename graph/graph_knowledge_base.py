@@ -353,7 +353,7 @@ class GraphKnowledgeBase:
         self,
         session: Session,
         query_text: str,
-        top_k: int = 5,
+        top_k: int = 50,
         similarity_threshold: float = 0.5,
     ) -> GraphRetrievalResult:
         query_embedding = get_text_embedding(query_text)
@@ -371,6 +371,8 @@ class GraphKnowledgeBase:
             JOIN {self._entity_table} se ON r.source_entity_id = se.id
             JOIN {self._entity_table} te ON r.target_entity_id = te.id
             WHERE (1 - VEC_COSINE_DISTANCE(r.description_vec, :query_embedding)) >= :threshold
+            ORDER BY similarity DESC
+            LIMIT :limit
             """
         )
 
@@ -379,6 +381,7 @@ class GraphKnowledgeBase:
             {
                 "query_embedding": str(query_embedding),
                 "threshold": similarity_threshold,
+                "limit": top_k,
             },
         ).fetchall()
 

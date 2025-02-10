@@ -1,12 +1,13 @@
 import os
 import time
-from typing import Optional, Dict, Any, Generator
+from typing import Optional, Generator
 import openai
 import requests
 from abc import ABC, abstractmethod
 import json
 import logging
 from google import genai
+from setting.base import MODEL_CONFIGS
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,32 @@ class BaseLLMProvider(ABC):
         """
         pass
 
+    def _get_default_model_config(self) -> dict:
+        """Get model-specific configuration parameters."""
+        # First check if there's a user-defined config in environment variables
+        env_config = MODEL_CONFIGS.get(self.model, {})
+        if env_config:
+            return env_config
+
+        # If no environment config, use default configs
+        if self.model == "gpt-4o":
+            return {
+                "temperature": 0,
+            }
+        elif self.model == "o3-mini":
+            return {"reasoning_effort": "medium"}
+
+        return {}
+
+    def _update_kwargs(self, kwargs: dict) -> dict:
+        # if config exists both in default and kwargs, use kwargs
+        for key, value in self._get_default_model_config().items():
+            if key in kwargs:
+                kwargs[key] = kwargs[key]
+            else:
+                kwargs[key] = value
+        return kwargs
+
 
 class OpenAIProvider(BaseLLMProvider):
     """
@@ -64,6 +91,7 @@ class OpenAIProvider(BaseLLMProvider):
     def __init__(self, model: str, **kwargs):
         super().__init__(model, **kwargs)
         openai.api_key = os.getenv("OPENAI_API_KEY")
+        openai.base_url = os.getenv("OPENAI_BASE_URL")
         if not openai.api_key:
             raise ValueError(
                 "OpenAI API key not set. Please set the OPENAI_API_KEY environment variable."
@@ -81,9 +109,11 @@ class OpenAIProvider(BaseLLMProvider):
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": full_prompt},
             ],
-            temperature=0,
-            **kwargs,
+            **self._update_kwargs(kwargs),
         )
+        if response.choices is None:
+            raise Exception(f"LLM response is None: {response.error}")
+
         return response.choices[0].message.content.strip()
 
     def generate_stream(
@@ -99,8 +129,7 @@ class OpenAIProvider(BaseLLMProvider):
                     {"role": "user", "content": full_prompt},
                 ],
                 stream=True,  # Enable streaming
-                temperature=0,
-                **kwargs,
+                **self._update_kwargs(kwargs),
             )
 
             for chunk in response:

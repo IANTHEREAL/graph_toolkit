@@ -1,10 +1,9 @@
 import json
 from typing import List, Dict
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
-from json_utils import extract_json
+from json_utils import extract_json_array
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +36,7 @@ class ChunkFilter:
         prompt = self._build_filter_prompt(query, chunks)
 
         try:
+            logger.info("Filter chunks %s", [chunk["id"] for chunk in chunks])
             response = self.llm.generate(prompt=prompt)
             filtered_chunks = self._parse_filter_response(
                 response, [c["id"] for c in chunks]
@@ -70,13 +70,8 @@ Query: {query}
 
 {chunks_text}
 
-For each chunk, provide STRICT evaluation with clear justification. each evaluation should contain following fields:
-- chunk_id: the id of the chunk
-- is_relevant: true/false
-- confidence: a float between 0-1
-- reasoning: a string explaining the justification for the is_relevant value
-
-Return JSON format:
+For each chunk, provide STRICT evaluation with clear justification.
+Return a JSON Array format, each item in the array is a JSON object for a chunk with the following fields:
 ```json
 [
     {{
@@ -88,6 +83,7 @@ Return JSON format:
     ...
 ] 
 ```
+
 Important: 
 - If uncertain, mark is_relevant=false with low confidence
 - Never invent information not in the chunk
@@ -98,7 +94,7 @@ Important:
     ) -> List[FilteredChunk]:
         """Parse LLM response into FilteredChunk objects"""
         try:
-            results = json.loads(extract_json(response))
+            results = json.loads(extract_json_array(response))
         except Exception as e:
             logger.error(
                 "Error parsing filter response %s, %s", response, e, exc_info=True
@@ -116,11 +112,15 @@ Important:
         # Create lookup for validation
         valid_ids = set(chunk_ids)
 
+        if isinstance(results, dict):
+            results = [results]
+
         filtered_chunks = []
         for result in results:
-            chunk_id = str(result.get("chunk_id"))  # Force string type
-            if chunk_id in valid_ids:
-                try:
+            logger.info("Filter Eval Result %s", result)
+            try:
+                chunk_id = result.get("chunk_id")  # Force string type
+                if chunk_id in valid_ids:
                     filtered_chunks.append(
                         FilteredChunk(
                             chunk_id=chunk_id,
@@ -129,18 +129,18 @@ Important:
                             reasoning=result["reasoning"].strip(),
                         )
                     )
-                except Exception as e:
-                    logger.error("Invalid result format %s, %s", result, e)
-                    # Add fallback entry
-                    filtered_chunks.append(
-                        FilteredChunk(
-                            chunk_id=chunk_id,
-                            is_relevant=False,
-                            confidence=0.0,
-                            reasoning=f"Invalid response format: {str(e)}",
-                        )
+                else:
+                    logger.warning("Received invalid chunk_id: %s", chunk_id)
+            except Exception as e:
+                logger.error("Invalid result format %s, %s", result, e, exc_info=True)
+                # Add fallback entry
+                filtered_chunks.append(
+                    FilteredChunk(
+                        chunk_id=chunk_id,
+                        is_relevant=False,
+                        confidence=0.0,
+                        reasoning=f"Invalid response format: {str(e)}",
                     )
-            else:
-                logger.warning("Received invalid chunk_id: %s", chunk_id)
+                )
 
         return filtered_chunks

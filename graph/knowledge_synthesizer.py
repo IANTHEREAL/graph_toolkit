@@ -321,12 +321,18 @@ Important:
 
 Your task is to strategically incorporate new information while maintaining answer quality.
 
+[STRICT REQUIREMENT]
+1. FIRST verify document relevance to query: "{query}"
+
 Original Query: {query}
 Current Answer State: {answer_state["current_answer"] or "No answer yet"}
 Document Source: {doc.doc_link}
 Document Content: {doc.content}
 
 Analysis Framework:
+0. Relevance Check:
+   - Does document content directly address {query}?
+
 1. Value Assessment:
    - Identify novel information not in current answer
    - Detect more recent versions of existing facts
@@ -362,6 +368,7 @@ Output Format:
 }}
 
 Quality Assurance:
+- MUST skip documents about unrelated systems/tools
 - Skip if document adds <10% new relevant content
 - Skip when confidence impact would be <+5%
 - Require minimum two independent sources for major changes
