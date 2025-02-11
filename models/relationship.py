@@ -41,12 +41,6 @@ def get_relationship_model(
             "Entity", foreign_keys=[target_entity_id], lazy="joined"
         )
 
-        def __init__(self, embedding_dims: int = 1536, **kwargs):
-            super().__init__(**kwargs)
-            self.description_vec = Column(
-                VectorType(embedding_dims), comment="hnsw(distance=cosine)"
-            )
-
         def __hash__(self):
             return hash(self.id)
 

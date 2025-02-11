@@ -26,17 +26,17 @@ class QueryIntent:
 class AnalysisResult:
     reasoning: str
     intent: QueryIntent
-    initial_queries: List[str]
+    retrieval_queries: List[str]
 
     def __str__(self) -> str:
-        queries_str = "\n    ".join(self.initial_queries)
+        queries_str = "\n    ".join(self.retrieval_queries)
         return f"""Analysis Result:
 Reasoning: {self.reasoning}
 Intent:
     Action: {self.intent.action}
     Target: {self.intent.target}
     Context: {self.intent.context}
-Initial Queries:
+Retrieval Queries:
     {queries_str}"""
 
 
@@ -86,12 +86,12 @@ def retry(max_attempts: int = 3, delay: float = 1.0):
 # ---------------------------
 
 
-def get_analysis_prompt(query):
+def get_analysis_prompt(goal):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     return f"""Current Time: {current_time}
 
-Deeply analyze this query using first principles thinking: "{query}"
+Deeply analyze this goal using first principles thinking: "{goal}"
 
 Goal: Understand the fundamental nature of the user's question by breaking it down to its most basic elements.
 
@@ -109,17 +109,25 @@ Output Format:
         "target": "<core entity or concept>",
         "context": "<broader context or domain>"
     }},
-    "initial_queries": [
-        "concrete search phrase derived from our understanding"
+    "retrieval_queries": [
+        "concrete search query 1 derived from our understanding",
+        "alternative phrasing for core concept",
     ]
 }}
 
 Key Requirements:
 - Reasoning MUST start from first principles, not assumptions
 - Intent MUST reflect the fundamental need, not just surface request
-- All components MUST be derived from the reasoning
+- retrieval_queries MUST include:
+  * All essential search dimensions identified in the reasoning
+  * Both broad and specific terminology variants
+  * Potential related concepts that could provide context
+  * Verification queries to validate assumptions
+  * Decomposed sub-queries for complex concepts
+- Generate 3-5 queries minimum, ordered by priority
+- Use both exact match and semantic search patterns
 
-Remember: The goal is to understand the true nature of the question, not just its surface form.
+Remember: The queries should form a complete information retrieval strategy based on your deep understanding.
 """
 
 
@@ -154,7 +162,7 @@ class DeepUnderstandingAnalyzer:
             return AnalysisResult(
                 reasoning=data["reasoning"],
                 intent=QueryIntent(**data["intent"]),
-                initial_queries=data["initial_queries"],
+                retrieval_queries=data["retrieval_queries"],
             )
 
         except (KeyError, json.JSONDecodeError) as e:

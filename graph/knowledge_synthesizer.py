@@ -7,6 +7,8 @@ import datetime
 from utils.json_utils import extract_json
 from .graph_knowledge_base import SearchAction, DocumentData
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------
 # Data Structures
 # ---------------------------
@@ -295,7 +297,11 @@ Important:
             raise ValueError("Invalid evaluation response") from e
 
     def iterative_answer_synthesis(
-        self, query: str, documents: Dict[str, DocumentData], reasoning: str
+        self,
+        query: str,
+        documents: Dict[str, DocumentData],
+        reasoning: str,
+        **model_kwargs,
     ) -> Dict:
         """
         Iteratively process documents to build and refine an answer to the query.
@@ -309,56 +315,62 @@ Important:
             Dict containing the final answer and its evolution history
         """
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         answer_state = {
             "current_answer": "",
             "history": [],  # Track how the answer evolved
+            "relationships": [],
         }
 
         for doc_id, doc in documents.items():
-            print(f"Processing document({doc_id}, {doc.doc_link})")
+            logger.info(f"Processing document({doc_id}, {doc.doc_link})")
+            relationships_list = []
+            for chunk in doc.chunks.values():
+                for rel in chunk.relationships:
+                    relationships_list.append(
+                        f"relationship_id: {rel.id}, description: {rel.source_entity['name']} -> {rel.relationship} -> {rel.target_entity['name']}"
+                    )
 
             prompt = f"""Current Time: {current_time}
 
 Your task is to strategically incorporate new information while maintaining answer quality.
 
 [STRICT REQUIREMENT]
-1. FIRST verify document relevance to query: "{query}"
+1. All improvements MUST be grounded in ACTUAL CONTENT from the document
+2. Final answer must be in English consistently
+3. Key claims must reference SPECIFIC document content with source links
 
 Original Query: {query}
-Current Answer State: {answer_state["current_answer"] or "No answer yet"}
-Document Source: {doc.doc_link}
-Document Content: {doc.content}
+Current Answer State (English): {answer_state["current_answer"] or "No answer yet"}
 
-Analysis Framework:
-0. Relevance Check:
-   - Does document content directly address {query}?
+Document Analysis:
+- Source: {doc.doc_link}
+- Document Content: {doc.content}
 
-1. Value Assessment:
-   - Identify novel information not in current answer
-   - Detect more recent versions of existing facts
-   - Find complementary perspectives/evidence
-   - Verify source credibility compared to existing sources
+Update Protocol:
+1. For each existing claim:
+  - Locate matching content in new document
+  - ONLY replace if new evidence is:
+    * More recent (check timestamps)
+    * From higher-authority source
+    * More detailed/complete
+  - Preserve original if equal quality
 
-2. Update Decision Criteria (proceed only if):
-   - Contains verifiable information missing from current answer
-   - Provides higher-confidence evidence for existing claims
-   - Offers critical context for understanding key points
-   - Presents equally valid alternative perspectives
+2. New claims MUST:
+  - Be extracted VERBATIM from document
+  - Include [Source:{doc.doc_link}] markers
 
-3. Information Integration Rules:
-   - Preserve superior existing information when:
-     * Current evidence is from more reliable sources
-     * Existing version has broader consensus
-     * New data doesn't improve clarity/completeness
-   - Prefer concise synthesis over redundant accumulation
-   - Mark deprecated information with [Superseded] tags
-   - Maintain version history in footnotes
+3. Language Rules:
+   - Maintain academic English tone
+   - Use consistent terminology
+   - Preserve existing formatting
+   - Translate non-English quotes to English with [Translated] marker
 
-Output Format:
+Output Format (ENGLISH ONLY):
 {{
     "should_skip": boolean,
     "skip_reason": "Required if should_skip=true",
-    "updated_answer": "Revised answer (unchanged if should_skip=true)",
+    "updated_answer": "Revised English answer with [Source:doc_link] for key claims",
     "change_breakdown": {{
         "improvements": ["List of substantive upgrades"],
         "preserved_content": ["Key maintained elements"],
@@ -368,32 +380,39 @@ Output Format:
 }}
 
 Quality Assurance:
-- MUST skip documents about unrelated systems/tools
-- Skip if document adds <10% new relevant content
-- Skip when confidence impact would be <+5%
+- MUST skip documents about unrelated systems/tools/features
+- Skip if document adds few (<10%) new relevant content
 - Require minimum two independent sources for major changes
 - Preserve superior phrasing from existing answer
-- Prefer older established facts over new unverified claims
 - Maintain traceability through source anchors
+- Citation Validation:
+  - All [Source:...] markers MUST match actual Document Sources
+  - NEVER invent non-existent document links
 """
+
             try:
                 MAX_RETRIES = 3
                 for retry_count in range(MAX_RETRIES):
                     try:
-                        raw_response = self.llm.generate(prompt)
+                        raw_response = self.llm.generate(prompt, **model_kwargs)
                         json_str = extract_json(raw_response)
                         update_data = json.loads(json_str)
 
                         if update_data.get("should_skip", False):
-                            print(f"Skipped document: {update_data['skip_reason']}")
-                            continue
+                            logger.warning(
+                                f"Skipped document: {update_data['skip_reason']}"
+                            )
+                            break
 
-                        print(
+                        logger.info(
                             f"Quality improvements: {update_data['change_breakdown']['improvements']}"
                         )
 
                         # Update answer state only if not skipped
                         answer_state["current_answer"] = update_data["updated_answer"]
+                        for chunk in doc.chunks.values():
+                            for rel in chunk.relationships:
+                                answer_state["relationships"].append(rel.to_dict())
 
                         # Track evolution with more granular metadata
                         answer_state["history"].append(
@@ -431,4 +450,5 @@ Quality Assurance:
         return {
             "final_answer": answer_state["current_answer"],
             "evolution_history": answer_state["history"],
+            "relationships": answer_state["relationships"],
         }

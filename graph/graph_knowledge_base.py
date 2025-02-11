@@ -1,21 +1,20 @@
-import openai
+import logging
+import json
 import time
 from dataclasses import dataclass, field
-
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal, Tuple
 from sqlmodel import Session
 from sqlalchemy import text
 
 from graph.chunk_filter import ChunkFilter
+from llm_inference.embedding import (
+    get_text_embedding,
+    get_entity_description_embedding,
+    get_entity_metadata_embedding,
+)
+from json_utils import extract_json
 
-embedding_model = openai.OpenAI()
-
-
-def get_text_embedding(text: str, model="text-embedding-3-small"):
-    text = text.replace("\n", " ")
-    return (
-        embedding_model.embeddings.create(input=[text], model=model).data[0].embedding
-    )
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -40,8 +39,6 @@ class SearchAction:
             return f"SearchAction(tool={self.tool}, query={self.query})"
         elif self.tool == "retrieve_neighbors":
             return f"SearchAction(tool={self.tool}, query={self.query}, entity_ids={self.entity_ids})"
-        elif self.tool == "retrieve_documents":
-            return f"SearchAction(tool={self.tool}, query={self.query})"
         else:
             raise ValueError(f"Invalid tool: {self.tool}")
 
@@ -51,6 +48,7 @@ class RelationshipData:
     id: int
     relationship: str
     chunk_id: int
+    document_id: int
     doc_link: str
     source_entity: Dict[str, Any]
     target_entity: Dict[str, Any]
@@ -62,6 +60,7 @@ class RelationshipData:
             "relationship": self.relationship,
             "chunk_id": self.chunk_id,
             "doc_link": self.doc_link,
+            "document_id": self.document_id,
             "source_entity": self.source_entity,
             "target_entity": self.target_entity,
             "similarity_score": self.similarity_score,
@@ -129,15 +128,16 @@ class GraphKnowledgeBase:
         self,
         session: Session,
         query_text: str,
-        top_k: int = 5,
-        similarity_threshold: float = 0.6,
+        top_k: int = 20,
+        similarity_threshold: float = 0.5,
+        **model_kwargs,
     ) -> GraphRetrievalResult:
         query_embedding = get_text_embedding(query_text)
 
         # Query similar relationships using raw SQL
         relationship_sql = text(
             f"""
-            SELECT r.id, r.description, r.chunk_id,
+            SELECT r.id, r.description, r.chunk_id, r.document_id,
                 se.id as source_id, se.name as source_name, se.description as source_description,
                 te.id as target_id, te.name as target_name, te.description as target_description,
                 JSON_UNQUOTE(JSON_EXTRACT(r.meta, '$.source_uri')) AS doc_link,
@@ -147,7 +147,7 @@ class GraphKnowledgeBase:
             JOIN {self._entity_table} te ON r.target_entity_id = te.id
             ORDER BY similarity DESC
             LIMIT :limit
-        """
+            """
         )
 
         # Execute queries
@@ -161,7 +161,7 @@ class GraphKnowledgeBase:
                 "limit": top_k,
             },
         ).fetchall()
-        print("query relationships use", time.time() - start_time)
+        logger.info(f"query relationships use {time.time() - start_time} seconds")
 
         # Process relationship results
         for row in relationship_results:
@@ -173,6 +173,7 @@ class GraphKnowledgeBase:
                     "relationship": row.description,
                     "chunk_id": row.chunk_id,
                     "doc_link": row.doc_link,
+                    "document_id": row.document_id,
                     "source_entity": {
                         "id": row.source_id,
                         "name": row.source_name,
@@ -191,23 +192,46 @@ class GraphKnowledgeBase:
             session, [row.get("chunk_id") for row in relationships]
         )
 
+        filtered_results = self.chunk_filter.filter_chunks(
+            query_text, chunks, **model_kwargs
+        )
+
+        # Get document IDs from relevant chunks
+        relevant_chunk_ids = {
+            result.chunk_id
+            for result in filtered_results
+            if result.is_relevant and result.confidence > 0.6
+        }
+
         result = GraphRetrievalResult(documents={})
+        documents_id = set()
         for chunk in chunks:
             chunk_id = chunk["id"]
+            if chunk_id not in relevant_chunk_ids:
+                continue
             for relationship in relationships:
                 if relationship["chunk_id"] == chunk_id:
-                    doc_link = relationship["doc_link"]
-                    if doc_link not in result.documents:
-                        result.documents[chunk["document_id"]] = DocumentData(
-                            id=chunk["document_id"], chunks={}, doc_link=doc_link
+                    doc_id = relationship["document_id"]
+                    if doc_id not in result.documents:
+                        if doc_id in documents_id:
+                            continue
+                        documents_id.add(doc_id)
+                        result.documents[doc_id] = DocumentData(
+                            id=doc_id, chunks={}, doc_link=chunk["doc_link"]
                         )
-                    if chunk_id not in result.documents[doc_link].chunks:
-                        result.documents[doc_link].chunks[chunk_id] = ChunkData(
+                    if chunk_id not in result.documents[doc_id].chunks:
+                        result.documents[doc_id].chunks[chunk_id] = ChunkData(
                             id=chunk_id, content=chunk["content"], relationships=[]
                         )
-                    result.documents[doc_link].chunks[chunk_id].relationships.append(
+                    result.documents[doc_id].chunks[chunk_id].relationships.append(
                         RelationshipData(**relationship)
                     )
+
+        if len(documents_id) > 0:
+            documents = self._get_documents(session, list(documents_id))
+            for doc_id, doc in documents.items():
+                if doc_id in result.documents:
+                    result.documents[doc_id].content = doc["content"]
 
         return result
 
@@ -218,7 +242,7 @@ class GraphKnowledgeBase:
         query: str,
         max_depth: int = 1,
         max_neighbors: int = 20,
-        similarity_threshold: float = 0.6,
+        similarity_threshold: float = 0.5,
     ) -> GraphRetrievalResult:
         query_embedding = get_text_embedding(query)
 
@@ -234,7 +258,7 @@ class GraphKnowledgeBase:
             # Query relationships using raw SQL
             relationship_sql = text(
                 f"""
-                SELECT r.id, r.description, r.chunk_id, r.source_entity_id, r.target_entity_id,
+                SELECT r.id, r.description, r.chunk_id, r.document_id, r.source_entity_id, r.target_entity_id,
                        se.name as source_name, se.description as source_description,
                        te.name as target_name, te.description as target_description,
                        JSON_UNQUOTE(JSON_EXTRACT(r.meta, '$.source_uri')) AS doc_link,
@@ -246,7 +270,7 @@ class GraphKnowledgeBase:
                    OR r.target_entity_id IN :current_nodes
                 ORDER BY similarity DESC
                 LIMIT :limit
-            """
+                """
             )
 
             relationships = session.execute(
@@ -255,7 +279,7 @@ class GraphKnowledgeBase:
                     "query_embedding": str(query_embedding),
                     "current_nodes": current_level_nodes,
                     "threshold": similarity_threshold,
-                    "limit": max_neighbors * 2,
+                    "limit": max_neighbors,
                 },
             ).fetchall()
 
@@ -281,6 +305,7 @@ class GraphKnowledgeBase:
                         "relationship": row.description,
                         "doc_link": row.doc_link,
                         "chunk_id": row.chunk_id,
+                        "document_id": row.document_id,
                         "source_entity": {
                             "id": row.source_entity_id,
                             "name": row.source_name,
@@ -307,24 +332,44 @@ class GraphKnowledgeBase:
             session, [row.get("chunk_id") for row in relationships]
         )
 
+        filtered_results = self.chunk_filter.filter_chunks(query, chunks)
+        # Get document IDs from relevant chunks
+        relevant_chunk_ids = {
+            result.chunk_id
+            for result in filtered_results
+            if result.is_relevant and result.confidence > 0.6
+        }
+
         # Convert to GraphRetrievalResult
         result = GraphRetrievalResult(documents={})
+        documents_id = set()
         for chunk in chunks:
             chunk_id = chunk["id"]
+            if chunk_id not in relevant_chunk_ids:
+                continue
             for relationship in relationships:
                 if relationship["chunk_id"] == chunk_id:
-                    doc_link = relationship["doc_link"]
-                    if doc_link not in result.documents:
-                        result.documents[chunk["document_id"]] = DocumentData(
-                            id=chunk["document_id"], doc_link=doc_link, chunks={}
+                    doc_id = relationship["document_id"]
+                    if doc_id not in result.documents:
+                        if doc_id in documents_id:
+                            continue
+                        documents_id.add(doc_id)
+                        result.documents[doc_id] = DocumentData(
+                            id=doc_id, chunks={}, doc_link=chunk["doc_link"]
                         )
-                    if chunk_id not in result.documents[doc_link].chunks:
-                        result.documents[doc_link].chunks[chunk_id] = ChunkData(
+                    if chunk_id not in result.documents[doc_id].chunks:
+                        result.documents[doc_id].chunks[chunk_id] = ChunkData(
                             id=chunk_id, content=chunk["content"], relationships=[]
                         )
-                    result.documents[doc_link].chunks[chunk_id].relationships.append(
+                    result.documents[doc_id].chunks[chunk_id].relationships.append(
                         RelationshipData(**relationship)
                     )
+
+        if len(documents_id) > 0:
+            documents = self._get_documents(session, list(documents_id))
+            for doc_id, doc in documents.items():
+                if doc_id in result.documents:
+                    result.documents[doc_id].content = doc["content"]
 
         return result
 
@@ -349,84 +394,21 @@ class GraphKnowledgeBase:
             for chunk in chunks
         ]
 
-    def retrieve_documents(
-        self,
-        session: Session,
-        query_text: str,
-        top_k: int = 50,
-        similarity_threshold: float = 0.5,
-    ) -> GraphRetrievalResult:
-        query_embedding = get_text_embedding(query_text)
-
-        # First get relationships with similarity scores
-        relationship_sql = text(
-            f"""
-            SELECT
-                r.id, r.description, r.chunk_id,
-                se.id as source_id, se.name as source_name, se.description as source_description,
-                te.id as target_id, te.name as target_name, te.description as target_description,
-                r.document_id,
-                (1 - VEC_COSINE_DISTANCE(r.description_vec, :query_embedding)) as similarity
-            FROM {self._relationship_table} r
-            JOIN {self._entity_table} se ON r.source_entity_id = se.id
-            JOIN {self._entity_table} te ON r.target_entity_id = te.id
-            WHERE (1 - VEC_COSINE_DISTANCE(r.description_vec, :query_embedding)) >= :threshold
-            ORDER BY similarity DESC
-            LIMIT :limit
-            """
+    def _get_documents(
+        self, session: Session, doc_ids: List[int]
+    ) -> List[Dict[str, Any]]:
+        doc_sql = text(
+            f"""SELECT id, content, source_uri as doc_link FROM {self._document_table} WHERE id IN :ids"""
         )
-
-        relationship_results = session.execute(
-            relationship_sql,
-            {
-                "query_embedding": str(query_embedding),
-                "threshold": similarity_threshold,
-                "limit": top_k,
-            },
-        ).fetchall()
-
-        # Get chunks for filtering
-        chunk_ids = [row.chunk_id for row in relationship_results]
-        if not chunk_ids:
-            return GraphRetrievalResult(documents={})
-
-        chunks = self._get_chunks(session, chunk_ids)
-
-        # Filter chunks using LLM
-        filtered_results = self.chunk_filter.filter_chunks(query_text, chunks)
-
-        # Get document IDs from relevant chunks
-        relevant_chunk_ids = {
-            result.chunk_id
-            for result in filtered_results
-            if result.is_relevant and result.confidence > 0.6
+        docs = session.execute(doc_sql, {"ids": doc_ids}).fetchall()
+        return {
+            doc.id: {
+                "id": doc.id,
+                "content": doc.content,
+                "doc_link": doc.doc_link,
+            }
+            for doc in docs
         }
-
-        # Get document IDs from filtered chunks
-        doc_ids = []
-        for chunk in chunks:
-            if chunk["id"] in relevant_chunk_ids:
-                doc_ids.append(chunk["document_id"])
-
-        if not doc_ids:
-            return GraphRetrievalResult(documents={})
-
-        # Query documents
-        docs_sql = text(
-            f"""
-            SELECT id, content, source_uri as doc_link
-            FROM {self._document_table}
-            WHERE id IN :doc_ids
-            """
-        )
-
-        result = GraphRetrievalResult(documents={})
-        for doc in session.execute(docs_sql, {"doc_ids": doc_ids}):
-            result.documents[doc.id] = DocumentData(
-                id=doc.id, content=doc.content, doc_link=doc.doc_link, chunks={}
-            )
-
-        return result
 
     def get_document(self, session: Session, doc_link: str) -> List[Dict[str, Any]]:
         doc_sql = text(
@@ -445,3 +427,117 @@ class GraphKnowledgeBase:
                 )
             }
         )
+
+    def store_synopsis_entity(
+        self,
+        db_session: Session,
+        original_query: str,
+        final_answer: str,
+        related_relationships: List[Dict],
+        **model_kwargs,
+    ) -> Tuple[int, List[int]]:
+        # Optimize query using LLM
+        optimize_prompt = f"""Rewrite the following technical query to be clearer, more concise, and easier to retrieve.
+The rewritten query should:
+1. Maintain technical accuracy
+2. Use standard technical terminology
+3. Be structured as a "How to..." or "Why..." question
+
+Original query: {original_query}
+
+Return only the rewritten query without any explanation in a json format.
+Json format:
+{{
+    "optimized_query": "rewritten query"
+}}
+"""
+
+        try:
+            response = self.llm_client.generate(prompt=optimize_prompt, **model_kwargs)
+            response_str = extract_json(response)
+            response_json = json.loads(response_str)
+            optimized_query = response_json["optimized_query"]
+        except Exception as e:
+            logger.error(f"Failed to optimize query: {str(e)}")
+            optimized_query = original_query
+
+        # Generate embeddings for entity
+        try:
+            # Combine name and description for description_vec
+            description_vec = get_entity_description_embedding(
+                optimized_query, final_answer
+            )
+
+            # Generate meta_vec from metadata
+            meta_data = {
+                "original_query": original_query,
+                "referenced_relationships": [
+                    rel["id"] for rel in related_relationships
+                ],
+            }
+            meta_vec = get_entity_metadata_embedding(meta_data)
+        except Exception as e:
+            logger.error(f"Failed to generate embeddings: {str(e)}")
+            description_vec = None
+            meta_vec = None
+
+        # Create synopsis entity
+        synopsis_entity = self._entity_model(
+            name=optimized_query,
+            description=final_answer,
+            entity_type="synopsis",
+            meta={
+                "original_query": original_query,
+                "referenced_relationships": [
+                    rel["id"] for rel in related_relationships
+                ],
+            },
+            description_vec=description_vec,
+            meta_vec=meta_vec,
+        )
+
+        try:
+            db_session.add(synopsis_entity)
+            db_session.flush()  # Get the generated ID
+        except Exception as e:
+            logger.error(f"Failed to save synopsis entity: {str(e)}")
+            db_session.rollback()
+
+        logger.info(f"Stored synopsis entity: {synopsis_entity.id}")
+
+        # Create new relationships linking synopsis to source entities
+        new_relationships = []
+        for rel in related_relationships:
+            rel_description = f"Summary connection for: {optimized_query}..."
+            try:
+                # Generate embedding for relationship description
+                rel_vec = get_text_embedding(rel_description)
+            except Exception as e:
+                logger.error(f"Failed to generate relationship embedding: {str(e)}")
+                rel_vec = None
+
+            new_rel = self._relationship_model(
+                description=rel_description,
+                source_entity_id=synopsis_entity.id,
+                target_entity_id=rel["source_entity"]["id"],
+                document_id=rel["document_id"],
+                chunk_id=rel["chunk_id"],
+                meta={
+                    "referenced_relationship_id": rel["id"],
+                    "source_uri": rel["doc_link"],
+                },
+                description_vec=rel_vec,
+            )
+            new_relationships.append(new_rel)
+
+        try:
+            db_session.bulk_save_objects(new_relationships)
+            db_session.commit()
+        except Exception as e:
+            logger.error(f"Failed to save relationships: {str(e)}")
+            db_session.rollback()
+
+        return {
+            "synopsis_entity_id": synopsis_entity.id,
+            "new_relationship_ids": [rel.id for rel in new_relationships],
+        }

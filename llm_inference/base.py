@@ -69,7 +69,7 @@ class BaseLLMProvider(ABC):
                 "temperature": 0,
             }
         elif self.model == "o3-mini":
-            return {"reasoning_effort": "medium"}
+            return {"reasoning_effort": "high"}
 
         return {}
 
@@ -113,6 +113,8 @@ class OpenAIProvider(BaseLLMProvider):
         )
         if response.choices is None:
             raise Exception(f"LLM response is None: {response.error}")
+
+        print(response)
 
         return response.choices[0].message.content.strip()
 
