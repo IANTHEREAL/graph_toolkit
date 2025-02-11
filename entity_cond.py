@@ -64,6 +64,7 @@ class EntityCond:
 
     def analyze(self, session: Session, query: str, **model_kwargs) -> List[str]:
         analysis_res = self.analyzer.perform(query, **model_kwargs)
+        logger.info(f"Initial analysis for {query}: {analysis_res}")
         next_actions = [
             SearchAction(tool="retrieve_graph_data", query=a)
             for a in analysis_res.retrieval_queries
@@ -77,11 +78,20 @@ class EntityCond:
             **model_kwargs,
         )
 
-        final_answer = result["final_answer"]
+        return result
+
+    def store_result(
+        self,
+        session: Session,
+        query: str,
+        final_answer: str,
+        related_relationships: List[Dict],
+        **model_kwargs,
+    ):
         return self.kb.store_synopsis_entity(
             session,
             query,
             final_answer,
-            result["related_relationships"],
+            related_relationships,
             **model_kwargs,
         )
