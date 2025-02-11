@@ -371,7 +371,7 @@ Output Format (ENGLISH ONLY):
     "should_skip": boolean,
     "skip_reason": "Required if should_skip=true",
     "updated_answer": "Revised English answer with [Source:doc_link] for key claims",
-    "change_breakdown": {{
+    "changes": {{
         "improvements": ["List of substantive upgrades"],
         "preserved_content": ["Key maintained elements"],
         "deprecated_items": ["Outdated information replaced"]
@@ -405,7 +405,7 @@ Quality Assurance:
                             break
 
                         logger.info(
-                            f"Quality improvements: {update_data['change_breakdown']['improvements']}"
+                            f"Quality improvements: {update_data['changes']['improvements']}"
                         )
 
                         # Update answer state only if not skipped
@@ -418,7 +418,7 @@ Quality Assurance:
                         answer_state["history"].append(
                             {
                                 "doc_link": doc.doc_link,
-                                "changes": update_data["change_breakdown"],
+                                "changes": update_data["changes"],
                                 "confidence_change": update_data["confidence_impact"],
                                 "update_decision": (
                                     "Applied"
@@ -433,12 +433,12 @@ Quality Assurance:
                     except (KeyError, json.JSONDecodeError) as e:
                         if retry_count == MAX_RETRIES - 1:  # Last retry
                             logging.error(
-                                f"Failed to process document {doc.doc_link} after {MAX_RETRIES} retries: {str(e)}",
+                                f"Failed to process document {doc.doc_link} after {MAX_RETRIES} retries: {str(e)}. response: {raw_response}",
                                 exc_info=True,
                             )
                             continue  # Move to next document
                         logging.warning(
-                            f"Retry {retry_count + 1}/{MAX_RETRIES} - Failed to process document {doc.doc_link}: {str(e)}"
+                            f"Retry {retry_count + 1}/{MAX_RETRIES} - Failed to process document {doc.doc_link}: {str(e)}. response: {raw_response}"
                         )
             except Exception as e:
                 logging.error(

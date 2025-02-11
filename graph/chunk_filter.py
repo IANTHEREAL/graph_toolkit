@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class FilteredChunk:
     chunk_id: str
-    is_relevant: bool
+    relevant: bool
     confidence: float
     reasoning: str
 
@@ -22,22 +22,22 @@ class ChunkFilter:
         self.batch_size = batch_size
         self.max_workers = max_workers
 
-    def filter_chunks(self, query: str, chunks: List[Dict]) -> List[FilteredChunk]:
+    def filter_chunks(self, query: str, chunks: List[Dict], **model_kwargs) -> List[FilteredChunk]:
         """Filter chunks using LLM to determine relevance to query"""
         filtered_chunks = []
         for i in range(0, len(chunks), self.batch_size):
             batch = chunks[i : i + self.batch_size]
-            filtered_chunks.extend(self._process_batch(query, batch))
+            filtered_chunks.extend(self._process_batch(query, batch, **model_kwargs))
 
         return filtered_chunks
 
-    def _process_batch(self, query: str, chunks: List[Dict]) -> List[FilteredChunk]:
+    def _process_batch(self, query: str, chunks: List[Dict], **model_kwargs) -> List[FilteredChunk]:
         """Process a batch of chunks"""
         prompt = self._build_filter_prompt(query, chunks)
 
         try:
             logger.info("Filter chunks %s", [chunk["id"] for chunk in chunks])
-            response = self.llm.generate(prompt=prompt)
+            response = self.llm.generate(prompt=prompt, **model_kwargs)
             filtered_chunks = self._parse_filter_response(
                 response, [c["id"] for c in chunks]
             )
@@ -48,7 +48,7 @@ class ChunkFilter:
             return [
                 FilteredChunk(
                     chunk_id=chunk["id"],
-                    is_relevant=True,
+                    relevant=True,
                     confidence=0.5,
                     reasoning="Error in filtering, keeping chunk as relevant",
                 )
@@ -76,7 +76,7 @@ Return a JSON Array format, each item in the array is a JSON object for a chunk 
 [
     {{
         "chunk_id": "1",  // MUST match chunk_id from input
-        "is_relevant": true/false,  // REQUIRED boolean
+        "relevant": true/false,  // REQUIRED boolean (MUST SPELL CORRECTLY - NOT 'is_levant')
         "confidence": 0.75,  // REQUIRED float between 0-1
         "reasoning": "Specific quotes/terms matching query"  // REQUIRED concrete evidence
     }},
@@ -85,7 +85,7 @@ Return a JSON Array format, each item in the array is a JSON object for a chunk 
 ```
 
 Important: 
-- If uncertain, mark is_relevant=false with low confidence
+- If uncertain, mark relevant=false with low confidence
 - Never invent information not in the chunk
 - Validate chunk_id matches exactly"""
 
@@ -102,7 +102,7 @@ Important:
             return [
                 FilteredChunk(
                     chunk_id=chunk_id,
-                    is_relevant=False,  # Changed from True to fail safe
+                    relevant=False,  # Changed from True to fail safe
                     confidence=0.0,
                     reasoning=f"Error parsing response: {str(e)}",
                 )
@@ -124,7 +124,7 @@ Important:
                     filtered_chunks.append(
                         FilteredChunk(
                             chunk_id=chunk_id,
-                            is_relevant=bool(result["is_relevant"]),
+                            relevant=bool(result["relevant"])),
                             confidence=float(result["confidence"]),
                             reasoning=result["reasoning"].strip(),
                         )
@@ -137,7 +137,7 @@ Important:
                 filtered_chunks.append(
                     FilteredChunk(
                         chunk_id=chunk_id,
-                        is_relevant=False,
+                        relevant=False,
                         confidence=0.0,
                         reasoning=f"Invalid response format: {str(e)}",
                     )

@@ -200,7 +200,7 @@ class GraphKnowledgeBase:
         relevant_chunk_ids = {
             result.chunk_id
             for result in filtered_results
-            if result.is_relevant and result.confidence > 0.6
+            if result.relevant and result.confidence > 0.6
         }
 
         result = GraphRetrievalResult(documents={})
@@ -337,7 +337,7 @@ class GraphKnowledgeBase:
         relevant_chunk_ids = {
             result.chunk_id
             for result in filtered_results
-            if result.is_relevant and result.confidence > 0.6
+            if result.relevant and result.confidence > 0.6
         }
 
         # Convert to GraphRetrievalResult

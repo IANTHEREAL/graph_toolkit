@@ -54,7 +54,7 @@ class EntityCond:
                                 relationship.similarity_score,
                             )
                         else:
-                            rel_dict[rel_id] = relationship.to_dict()
+                            rel_dict[rel_id] = relationship
 
                     knowledge_retrieved[doc_id].chunks[chunk_id].relationships = list(
                         rel_dict.values()
