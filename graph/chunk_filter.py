@@ -124,7 +124,7 @@ Important:
                     filtered_chunks.append(
                         FilteredChunk(
                             chunk_id=chunk_id,
-                            relevant=bool(result["relevant"])),
+                            relevant=bool(result["relevant"]),
                             confidence=float(result["confidence"]),
                             reasoning=result["reasoning"].strip(),
                         )

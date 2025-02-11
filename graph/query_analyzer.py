@@ -8,6 +8,8 @@ from functools import wraps
 
 from utils.json_utils import extract_json
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------
 # Data Structures
 # ---------------------------
@@ -101,20 +103,6 @@ First Principles Analysis:
 3. Why is the user asking this question? (Consider underlying needs)
 4. How would we know if we've fully answered the question?
 
-Output Format:
-{{
-    "reasoning": "Deep analysis starting from first principles, explaining how we understand the user's fundamental need and how we arrived at our conclusions",
-    "intent": {{
-        "action": "<fundamental operation needed>",
-        "target": "<core entity or concept>",
-        "context": "<broader context or domain>"
-    }},
-    "retrieval_queries": [
-        "concrete search query 1 derived from our understanding",
-        "alternative phrasing for core concept",
-    ]
-}}
-
 Key Requirements:
 - Reasoning MUST start from first principles, not assumptions
 - Intent MUST reflect the fundamental need, not just surface request
@@ -128,6 +116,19 @@ Key Requirements:
 - Use both exact match and semantic search patterns
 
 Remember: The queries should form a complete information retrieval strategy based on your deep understanding.
+Output Format:
+{{
+    "reasoning": "Deep analysis starting from first principles, explaining how we understand the user's fundamental need and how we arrived at our conclusions",
+    "intent": {{
+        "action": "<fundamental operation needed>",
+        "target": "<core entity or concept>",
+        "context": "<broader context or domain>"
+    }},
+    "retrieval_queries": [
+        "concrete search query 1 derived from our understanding",
+        "alternative phrasing for core concept",
+    ]
+}}
 """
 
 
@@ -165,6 +166,6 @@ class DeepUnderstandingAnalyzer:
                 retrieval_queries=data["retrieval_queries"],
             )
 
-        except (KeyError, json.JSONDecodeError) as e:
-            logging.error(f"Parsing failed: {str(e)}", exc_info=True)
+        except (KeyError, json.JSONDecodeError, Exception) as e:
+            logger.error("Parsing failed: %s, data %s", e, raw,exc_info=True)
             raise AnalysisError("Invalid analysis response") from e
