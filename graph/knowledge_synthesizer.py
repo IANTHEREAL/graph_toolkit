@@ -366,7 +366,8 @@ Update Protocol:
    - Preserve existing formatting
    - Translate non-English quotes to English with [Translated] marker
 
-Output Format (ENGLISH ONLY):
+Output Json Format (ENGLISH ONLY):
+```json
 {{
     "should_skip": boolean,
     "skip_reason": "Required if should_skip=true",
@@ -378,6 +379,7 @@ Output Format (ENGLISH ONLY):
     }},
     "confidence_impact": "+X%/-X% based on changes"
 }}
+```
 
 Quality Assurance:
 - MUST skip documents about unrelated systems/tools/features
