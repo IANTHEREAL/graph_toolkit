@@ -114,8 +114,6 @@ class OpenAIProvider(BaseLLMProvider):
         if response.choices is None:
             raise Exception(f"LLM response is None: {response.error}")
 
-        print(response)
-
         return response.choices[0].message.content.strip()
 
     def generate_stream(

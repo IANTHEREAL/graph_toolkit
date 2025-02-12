@@ -16,28 +16,14 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class QueryIntent:
-    """Derived from reasoning analysis"""
-
-    action: str
-    target: str
-    context: str
-
-
-@dataclass
 class AnalysisResult:
     reasoning: str
-    intent: QueryIntent
     retrieval_queries: List[str]
 
     def __str__(self) -> str:
         queries_str = "\n    ".join(self.retrieval_queries)
         return f"""Analysis Result:
 Reasoning: {self.reasoning}
-Intent:
-    Action: {self.intent.action}
-    Target: {self.intent.target}
-    Context: {self.intent.context}
 Retrieval Queries:
     {queries_str}"""
 
@@ -93,47 +79,42 @@ def get_analysis_prompt(goal):
 
     return f"""Current Time: {current_time}
 
-Deeply analyze this goal using first principles thinking: "{goal}"
+**Task:** Analyze the user's goal "{goal}" using first principles and generate effective search queries to understand it deeply.
 
-Goal: Understand the fundamental nature of the user's question by breaking it down to its most basic elements.
+**First Principles Analysis - Break Down the Goal:**
 
-First Principles Analysis:
-1. What is the user truly trying to achieve? (Look beyond the surface request)
-2. What are the fundamental components needed to answer this?
-3. Why is the user asking this question? (Consider underlying needs)
-4. How would we know if we've fully answered the question?
+Think step-by-step to understand the *core* of the user's goal. Ask yourself:
 
-Output Json Format:
+1. **User's Core Need:** What is the user *really* trying to accomplish beyond their stated goal? What's their underlying need or problem?
+2. **Fundamental Components:** What are the essential pieces of information needed to fully address this core need?  Think of the basic concepts and elements involved.
+3. **Motivation:** *Why* is the user asking this? What are they hoping to achieve by understanding this goal? (Consider context and purpose).
+4. **Verification:** How can we confirm we've truly understood and addressed the user's core need? What would demonstrate a complete answer?
+
+**Query Generation - Information Retrieval Strategy:**
+
+Based on your first principles analysis, create a set of search queries to gather the necessary information.  Your queries MUST:
+
+* **Cover Key Dimensions:**  Address all essential aspects identified in your "Fundamental Components" analysis.
+* **Use Varied Terminology:** Include both broad and specific terms, synonyms, and related concepts.
+* **Explore Context:**  Generate queries to understand the context and related concepts of the user's goal.
+* **Validate Assumptions:** Create queries to verify any assumptions you've made during your analysis.
+* **Decompose Complexity:** For complex goals, break them down into sub-queries focusing on individual components.
+* **Employ Search Patterns:** Use a mix of exact match keywords and semantic search phrases (natural language questions).
+
+**Generate a5 least 3-5 High-Priority Queries:** Order these queries from most to least important for initial understanding.
+
+**Output Json Format:**
 ```json
 {{
-    "reasoning": "Deep analysis starting from first principles, explaining how we understand the user's fundamental need and how we arrived at our conclusions",
-    "intent": {{
-        "action": "<fundamental operation needed>",
-        "target": "<core entity or concept>",
-        "context": "<broader context or domain>"
-    }},
+    "reasoning": "Detailed first-principles analysis explaining your understanding of the user's core need, the fundamental components, and how you arrived at the retrieval queries.",
     "retrieval_queries": [
-        "concrete search query 1 derived from our understanding",
-        "alternative phrasing for core concept",
+        "High-priority search query 1",
+        "Next most important query",
+        "...",
     ]
 }}
 ```
-
-Key Requirements:
-- Reasoning MUST start from first principles, not assumptions
-- Intent MUST reflect the fundamental need, not just surface request
-- retrieval_queries MUST include:
-  * All essential search dimensions identified in the reasoning
-  * Both broad and specific terminology variants
-  * Potential related concepts that could provide context
-  * Verification queries to validate assumptions
-  * Decomposed sub-queries for complex concepts
-- Generate 3-5 queries minimum, ordered by priority
-- Use both exact match and semantic search patterns
-
-Remember: The queries should form a complete information retrieval strategy based on your deep understanding.
 """
-
 
 # ---------------------------
 # Core Analysis Class
@@ -165,7 +146,6 @@ class DeepUnderstandingAnalyzer:
 
             return AnalysisResult(
                 reasoning=data["reasoning"],
-                intent=QueryIntent(**data["intent"]),
                 retrieval_queries=data["retrieval_queries"],
             )
 

@@ -71,10 +71,9 @@ class EntityCond:
         ]
 
         docs = self.apply(session, next_actions, **model_kwargs)
-        result = self.synthesizer.iterative_answer_synthesis(
+        result = self.synthesizer.map_reduce_synthesis(
             query=query,
             documents=docs,
-            reasoning=analysis_res.reasoning,
             **model_kwargs,
         )
 
