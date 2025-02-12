@@ -6,6 +6,9 @@ from typing import Any, Dict, List, Optional, Literal, Tuple
 from sqlmodel import Session
 from sqlalchemy import text
 
+from models.entity import get_entity_model
+from models.relationship import get_relationship_model
+
 from graph.chunk_filter import ChunkFilter
 from llm_inference.embedding import (
     get_text_embedding,
@@ -123,6 +126,8 @@ class GraphKnowledgeBase:
         self._chunk_table = chunk_table_name
         self._document_table = document_table_name
         self.chunk_filter = ChunkFilter(llm_client, 5, 1)
+        self._entity_model = get_entity_model(self._entity_table)
+        self._relationship_model = get_relationship_model(self._relationship_table)
 
     def retrieve_graph_data(
         self,
@@ -532,12 +537,17 @@ Json format:
 
         try:
             db_session.bulk_save_objects(new_relationships)
+            db_session.flush()  # Add this line to flush before commit
+            relationship_ids = [
+                rel.id for rel in new_relationships
+            ]  # Get IDs after flush
             db_session.commit()
         except Exception as e:
             logger.error(f"Failed to save relationships: {str(e)}")
             db_session.rollback()
+            relationship_ids = []  # Return empty list if failed
 
         return {
             "synopsis_entity_id": synopsis_entity.id,
-            "new_relationship_ids": [rel.id for rel in new_relationships],
+            "new_relationship_ids": relationship_ids,  # Use the collected IDs
         }

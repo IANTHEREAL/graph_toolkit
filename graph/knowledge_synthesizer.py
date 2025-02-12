@@ -8,6 +8,7 @@ from .graph_knowledge_base import DocumentData
 
 logger = logging.getLogger(__name__)
 
+
 class KnowledgeSynthesizer:
     """
     Synthesizes knowledge from search results into a list of findings
@@ -101,7 +102,9 @@ Your goal is to update and improve an answer to the query using information from
                         json_str = extract_json(raw_response)
                         update_data = json.loads(json_str)
 
-                        logger.info("Commit Detail: %s", json.dumps(update_data, indent=2))
+                        logger.info(
+                            "Commit Detail: %s", json.dumps(update_data, indent=2)
+                        )
 
                         if update_data.get("should_skip", False) is True:
                             logger.warning(
@@ -153,12 +156,7 @@ Your goal is to update and improve an answer to the query using information from
             "relationships": answer_state["relationships"],
         }
 
-    def answer_on_document(
-        self,
-        query: str,
-        doc: DocumentData,
-        **model_kwargs
-    ) -> Dict:
+    def answer_on_document(self, query: str, doc: DocumentData, **model_kwargs) -> Dict:
         """Process individual documents"""
         try:
             current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -190,12 +188,16 @@ Output JSON:
 ```
 """
 
-            raw_response = self.llm.generate(prompt, **model_kwargs)   
+            raw_response = self.llm.generate(prompt, **model_kwargs)
             json_str = extract_json(raw_response)
             response = json.loads(json_str)
 
-            logger.info("answer on document %s result: %s", doc.doc_link, json.dumps(response, indent=2))
-            
+            logger.info(
+                "answer on document %s result: %s",
+                doc.doc_link,
+                json.dumps(response, indent=2),
+            )
+
             if not response.get("should_skip"):
                 return {
                     "doc_link": doc.doc_link,
@@ -204,28 +206,30 @@ Output JSON:
                 }
 
         except Exception as e:
-            logger.error("Map phase failed for %s:%s, response: %s", doc.doc_link, str(e), raw_response)
-        
+            logger.error(
+                "Map phase failed for %s:%s, response: %s",
+                doc.doc_link,
+                str(e),
+                raw_response,
+            )
+
         return None
-    
 
     def synthesize_answer(
-        self,
-        query: str,
-        map_results: List[Dict],
-        **model_kwargs
+        self, query: str, map_results: List[Dict], **model_kwargs
     ) -> Dict:
         """Enhanced synthesis answer from map results"""
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
         # Group segments and facts by document
         doc_segments = [
             {
                 "doc_link": res["doc_link"],
                 "answer_segment": res["answer_segment"],
-                "key_facts": res.get("key_facts", [])
+                "key_facts": res.get("key_facts", []),
             }
-            for res in map_results if res
+            for res in map_results
+            if res
         ]
 
         prompt = f"""Current Time: {current_time}
@@ -271,43 +275,48 @@ Output JSON Format:
                     raw_response = self.llm.generate(prompt, **model_kwargs)
                     json_str = extract_json(raw_response)
                     result = json.loads(json_str)
-                    
+
                     return {
                         "final_answer": result["final_answer"],
-                        "sources_adapted": list(set(result["sources_adapted"])),  # Deduplicate sources
+                        "sources_adapted": list(
+                            set(result["sources_adapted"])
+                        ),  # Deduplicate sources
                     }
-                    
+
                 except (json.JSONDecodeError, KeyError, Exception) as e:
                     if retry_count == MAX_RETRIES - 1:  # Last retry
                         raise
-                    logger.warning(f"Retry {retry_count + 1}/{MAX_RETRIES} - Synthesis failed: {str(e)}")
-                    
+                    logger.warning(
+                        f"Retry {retry_count + 1}/{MAX_RETRIES} - Synthesis failed: {str(e)}"
+                    )
+
         except Exception as e:
             logger.error(f"Synthesis failed: {str(e)}", exc_info=True)
             return {
                 "final_answer": "Failed to synthesize final answer. Please refer to original segments.",
                 "sources_adapted": [],
-                "error": str(e)
+                "error": str(e),
             }
 
     def map_reduce_synthesis(
-        self,
-        query: str,
-        documents: Dict[str, DocumentData],
-        **model_kwargs
+        self, query: str, documents: Dict[str, DocumentData], **model_kwargs
     ) -> Dict:
         """Full map-reduce synthesis workflow"""
-        
+
         # Phase 1: Sequential Mapping
         map_results = []
+        relationships = []
         for doc in documents.values():
             res = self.answer_on_document(query, doc, **model_kwargs)
             if res:
+                for chunk in doc.chunks.values():
+                    for rel in chunk.relationships:
+                        relationships.append(rel.to_dict())
                 logger.info("answer on document %s result: %s", doc.doc_link, res)
                 map_results.append(res)
             else:
                 logger.warning("Skipped irrelevant document %s", doc.doc_link)
-        
+
         # Phase 2: Result Reduction
         if len(map_results) > 0:
             reduce_result = self.synthesize_answer(query, map_results, **model_kwargs)
@@ -315,9 +324,11 @@ Output JSON Format:
             reduce_result = {
                 "final_answer": None,
                 "sources_adapted": [],
+                "relationships": [],
             }
 
         return {
             **reduce_result,
+            "relationships": relationships,
             "map_results": map_results,
         }
