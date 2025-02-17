@@ -26,11 +26,15 @@ class EntityCond:
             logger.info(f"applying {action}")
             if action.tool == "retrieve_graph_data":
                 data = self.kb.retrieve_graph_data(
-                    session, action.query, **model_kwargs
+                    session, action.query, action.top_k, **model_kwargs
                 )
             elif action.tool == "retrieve_neighbors":
                 data = self.kb.retrieve_neighbors(
-                    session, action.entity_ids, action.query, **model_kwargs
+                    session,
+                    action.entity_ids,
+                    action.query,
+                    action.top_k,
+                    **model_kwargs,
                 )
             else:
                 raise ValueError(f"Invalid tool: {action.tool}")
@@ -62,11 +66,13 @@ class EntityCond:
 
         return knowledge_retrieved
 
-    def analyze(self, session: Session, query: str, **model_kwargs) -> List[str]:
+    def analyze(
+        self, session: Session, query: str, top_k: int = 20, **model_kwargs
+    ) -> List[str]:
         analysis_res = self.analyzer.perform(query, **model_kwargs)
         logger.info(f"Initial analysis for {query}: {analysis_res}")
         next_actions = [
-            SearchAction(tool="retrieve_graph_data", query=a)
+            SearchAction(tool="retrieve_graph_data", query=a, top_k=top_k)
             for a in analysis_res.retrieval_queries
         ]
 

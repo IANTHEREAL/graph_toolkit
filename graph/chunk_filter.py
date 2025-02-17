@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 
 from json_utils import extract_json_array
+from graph.utils import retry
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class ChunkFilter:
 
         return filtered_chunks
 
+    @retry(max_attempts=3, delay=1.0)
     def _process_batch(self, query: str, chunks: List[Dict], **model_kwargs) -> List[FilteredChunk]:
         """Process a batch of chunks"""
         prompt = self._build_filter_prompt(query, chunks)
@@ -45,15 +47,7 @@ class ChunkFilter:
         except Exception as e:
             logger.error(f"Error filtering chunks: {str(e)}")
             # Return all chunks as relevant in case of error
-            return [
-                FilteredChunk(
-                    chunk_id=chunk["id"],
-                    relevant=True,
-                    confidence=0.5,
-                    reasoning="Error in filtering, keeping chunk as relevant",
-                )
-                for chunk in chunks
-            ]
+            raise e
 
     def _build_filter_prompt(self, query: str, chunks: List[Dict]) -> str:
         chunks_text = "\n\n".join(
@@ -96,18 +90,8 @@ Important:
         try:
             results = json.loads(extract_json_array(response))
         except Exception as e:
-            logger.error(
-                "Error parsing filter response %s, %s", response, e, exc_info=True
-            )
-            return [
-                FilteredChunk(
-                    chunk_id=chunk_id,
-                    relevant=False,  # Changed from True to fail safe
-                    confidence=0.0,
-                    reasoning=f"Error parsing response: {str(e)}",
-                )
-                for chunk_id in chunk_ids
-            ]
+            logger.info("Error parsing filter response %s", response)
+            raise e
 
         # Create lookup for validation
         valid_ids = set(chunk_ids)

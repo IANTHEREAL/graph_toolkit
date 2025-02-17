@@ -6,9 +6,6 @@ from typing import Any, Dict, List, Optional, Literal, Tuple
 from sqlmodel import Session
 from sqlalchemy import text
 
-from models.entity import get_entity_model
-from models.relationship import get_relationship_model
-
 from graph.chunk_filter import ChunkFilter
 from llm_inference.embedding import (
     get_text_embedding,
@@ -28,6 +25,7 @@ class SearchAction:
     query: Optional[str] = None  # For retrieve_knowledge and retrieve_neighbors
     entity_ids: Optional[List[int]] = None  # For retrieve_neighbors
     doc_link: Optional[str] = None  # For retrieve_knowledge
+    top_k: int = 20  # For retrieve_graph_data
 
     def to_dict(self):
         return {
@@ -35,6 +33,7 @@ class SearchAction:
             "query": self.query,
             "entity_ids": self.entity_ids,
             "doc_link": self.doc_link,
+            "top_k": self.top_k,
         }
 
     def __str__(self):
@@ -126,8 +125,7 @@ class GraphKnowledgeBase:
         self._chunk_table = chunk_table_name
         self._document_table = document_table_name
         self.chunk_filter = ChunkFilter(llm_client, 5, 1)
-        self._entity_model = get_entity_model(self._entity_table)
-        self._relationship_model = get_relationship_model(self._relationship_table)
+        self.llm_client = llm_client
 
     def retrieve_graph_data(
         self,
@@ -192,6 +190,9 @@ class GraphKnowledgeBase:
                     "similarity_score": row.similarity,
                 }
             )
+
+        if len(relationships) == 0:
+            return GraphRetrievalResult(documents={})
 
         chunks = self._get_chunks(
             session, [row.get("chunk_id") for row in relationships]
@@ -482,72 +483,92 @@ Json format:
             }
             meta_vec = get_entity_metadata_embedding(meta_data)
         except Exception as e:
-            logger.error(f"Failed to generate embeddings: {str(e)}")
-            description_vec = None
-            meta_vec = None
+            raise e
 
-        # Create synopsis entity
-        synopsis_entity = self._entity_model(
-            name=optimized_query,
-            description=final_answer,
-            entity_type="synopsis",
-            meta={
-                "original_query": original_query,
-                "referenced_relationships": [
-                    rel["id"] for rel in related_relationships
-                ],
-            },
-            description_vec=description_vec,
-            meta_vec=meta_vec,
+        # Create synopsis entity using SQL
+        entity_sql = text(
+            f"""
+            INSERT INTO {self._entity_table}
+            (name, description, entity_type, meta, description_vec, meta_vec)
+            VALUES
+            (:name, :description, :entity_type, :meta, :description_vec, :meta_vec)
+            """
         )
 
         try:
-            db_session.add(synopsis_entity)
-            db_session.flush()  # Get the generated ID
+            result = db_session.execute(
+                entity_sql,
+                {
+                    "name": optimized_query,
+                    "description": final_answer,
+                    "entity_type": "synopsis",
+                    "meta": json.dumps(
+                        {
+                            "original_query": original_query,
+                            "referenced_relationships": [
+                                rel["id"] for rel in related_relationships
+                            ],
+                        }
+                    ),
+                    "description_vec": str(description_vec),
+                    "meta_vec": str(meta_vec),
+                },
+            )
+            db_session.flush()
+            synopsis_entity_id = result.lastrowid
+            logger.info(f"Stored synopsis entity: {synopsis_entity_id}, {optimized_query}")
         except Exception as e:
             logger.error(f"Failed to save synopsis entity: {str(e)}")
             db_session.rollback()
+            return {"synopsis_entity_id": None, "new_relationship_ids": []}
 
-        logger.info(f"Stored synopsis entity: {synopsis_entity.id}")
+        # Create new relationships using SQL
+        relationship_sql = text(
+            f"""
+            INSERT INTO {self._relationship_table}
+            (description, source_entity_id, target_entity_id, document_id, chunk_id, meta, description_vec, weight)
+            VALUES
+            (:description, :source_entity_id, :target_entity_id, :document_id, :chunk_id, :meta, :description_vec, 0)
+            """
+        )
 
-        # Create new relationships linking synopsis to source entities
-        new_relationships = []
-        for rel in related_relationships:
-            rel_description = f"Summary connection for: {optimized_query}..."
-            try:
-                # Generate embedding for relationship description
-                rel_vec = get_text_embedding(rel_description)
-            except Exception as e:
-                logger.error(f"Failed to generate relationship embedding: {str(e)}")
-                rel_vec = None
-
-            new_rel = self._relationship_model(
-                description=rel_description,
-                source_entity_id=synopsis_entity.id,
-                target_entity_id=rel["source_entity"]["id"],
-                document_id=rel["document_id"],
-                chunk_id=rel["chunk_id"],
-                meta={
-                    "referenced_relationship_id": rel["id"],
-                    "source_uri": rel["doc_link"],
-                },
-                description_vec=rel_vec,
-            )
-            new_relationships.append(new_rel)
-
+        relationship_ids = []
         try:
-            db_session.bulk_save_objects(new_relationships)
-            db_session.flush()  # Add this line to flush before commit
-            relationship_ids = [
-                rel.id for rel in new_relationships
-            ]  # Get IDs after flush
+            for rel in related_relationships:
+                rel_description = f"Summary connection for: {optimized_query}..."
+                try:
+                    rel_vec = get_text_embedding(rel_description)
+                except Exception as e:
+                    logger.error(f"Failed to generate relationship embedding: {str(e)}")
+                    raise e
+
+                result = db_session.execute(
+                    relationship_sql,
+                    {
+                        "description": rel_description,
+                        "source_entity_id": synopsis_entity_id,
+                        "target_entity_id": rel["source_entity"]["id"],
+                        "document_id": rel["document_id"],
+                        "chunk_id": rel["chunk_id"],
+                        "meta": json.dumps(
+                            {
+                                "referenced_relationship_id": rel["id"],
+                                "source_uri": rel["doc_link"],
+                            }
+                        ),
+                        "description_vec": str(rel_vec),
+                    },
+                )
+                db_session.flush()
+                relationship_ids.append(result.lastrowid)
+
             db_session.commit()
         except Exception as e:
             logger.error(f"Failed to save relationships: {str(e)}")
             db_session.rollback()
-            relationship_ids = []  # Return empty list if failed
+            relationship_ids = []
 
         return {
-            "synopsis_entity_id": synopsis_entity.id,
-            "new_relationship_ids": relationship_ids,  # Use the collected IDs
+            "synopsis_entity_id": synopsis_entity_id,
+            "new_relationship_ids": relationship_ids,
         }

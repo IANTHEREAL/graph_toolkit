@@ -2,10 +2,10 @@ import json
 import time
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import List
 from dataclasses import dataclass
-from functools import wraps
 
+from graph.utils import retry
 from utils.json_utils import extract_json
 
 logger = logging.getLogger(__name__)
@@ -39,34 +39,6 @@ class AnalysisError(Exception):
 
 class ValidationError(AnalysisError):
     """Causal flow validation failure"""
-
-
-# ---------------------------
-# Utility Functions
-# ---------------------------
-
-
-def retry(max_attempts: int = 3, delay: float = 1.0):
-    """Retry decorator with exponential backoff"""
-
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            attempts = 0
-            while attempts < max_attempts:
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    attempts += 1
-                    if attempts >= max_attempts:
-                        raise
-                    sleep_time = delay * (2 ** (attempts - 1))
-                    logging.warning(f"Retry {attempts}/{max_attempts} in {sleep_time}s")
-                    time.sleep(sleep_time)
-
-        return wrapper
-
-    return decorator
 
 
 # ---------------------------
@@ -116,6 +88,7 @@ Based on your first principles analysis, create a set of search queries to gathe
 ```
 """
 
+
 # ---------------------------
 # Core Analysis Class
 # ---------------------------
@@ -150,5 +123,5 @@ class DeepUnderstandingAnalyzer:
             )
 
         except (KeyError, json.JSONDecodeError, Exception) as e:
-            logger.error("Parsing failed: %s, data %s", e, raw,exc_info=True)
+            logger.error("Parsing failed: %s, data %s", e, raw, exc_info=True)
             raise AnalysisError("Invalid analysis response") from e
